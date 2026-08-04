@@ -4,7 +4,15 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     dns.url = "github:nix-community/dns.nix";
-    knot-zones.url = "path:../knot-zones";
+    # dns.nix pins nixpkgs from 2021, but its own zone.nix calls lib.trim,
+    # which nixpkgs only grew in 2024 -- so it does not evaluate against its
+    # own lock. Consumers have to supply a newer lib.
+    dns.inputs.nixpkgs.follows = "nixpkgs";
+    # Absolute, because a relative `path:../knot-zones` is resolved against the
+    # store copy of this flake once it is fetched, where the sibling does not
+    # exist. Repoint this at a URL when the repos are published, or override it
+    # with `--override-input knot-zones <path>`.
+    knot-zones.url = "github:sirati/nix-dns-knot";
     knot-zones.inputs.nixpkgs.follows = "nixpkgs";
     knot-zones.inputs.dns.follows = "dns";
     flake-utils.url = "github:numtide/flake-utils";
@@ -12,9 +20,12 @@
 
   outputs = { self, nixpkgs, dns, knot-zones, flake-utils }:
     {
-      nixosModules.default = { pkgs, ... }: {
+      nixosModules.default = { pkgs, lib, ... }: {
         imports = [ ./modules/container.nix ];
-        _module.args.knotZones = knot-zones.lib.${pkgs.stdenv.hostPlatform.system};
+        # mkDefault so a consumer with their own knot-zones checkout can
+        # override it without forking this module.
+        _module.args.knotZones =
+          lib.mkDefault knot-zones.lib.${pkgs.stdenv.hostPlatform.system};
       };
 
       nixosModules.knotService = self.nixosModules.default;
