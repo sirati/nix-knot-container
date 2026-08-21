@@ -1,29 +1,19 @@
 # knot-service
 
-A NixOS container that runs [Knot DNS](https://www.knot-dns.cz/) and nothing
-else. Zone files only, always signed, minimal attack surface.
+A NixOS container that runs Knot DNS from zone files only — no SQL, Redis or Valkey backend — always DNSSEC-signed, as primary or secondary, with TSIG-authenticated transfers and scoped RFC 2136 dynamic update.
 
-## Design constraints
+## Input
 
-**Zone files only.** No SQL backend, no Redis/Valkey zone database. Knot's
-`storage` is a read-only Nix store path built by
-[knot-zones](https://github.com/sirati/nix-dns-knot); its journal in `/var/lib/knot` is the only
-mutable copy. There is never a question about which representation is
-authoritative, and there is no database to back up, migrate, or leave running.
+```nix
+inputs = {
+  dns.url = "github:nix-community/dns.nix";
+  dns.inputs.nixpkgs.follows = "nixpkgs";
+  knot-service.url = "github:sirati/nix-knot-container";
+  knot-service.inputs.dns.follows = "dns";
+};
+```
 
-**DNSSEC is not optional.** There is deliberately no `dnssec.enable = false`.
-An authoritative server serving unsigned zones by default is a downgrade
-waiting to happen, and with Knot's automatic key management the cost of signing
-is close to zero. You can tune the algorithm and rollover; you cannot turn it
-off.
-
-**The container is the boundary.** `privateNetwork = true` gives it its own
-network namespace, so the firewall inside it is the whole exposure rather than
-a filter layered over the host's interfaces. Ports 53/tcp and 53/udp are open
-and nothing else. A nameserver answers queries and talks to its peers; it does
-not need outbound anything.
-
-## Usage
+## Primary
 
 ```nix
 {
@@ -43,8 +33,8 @@ not need outbound anything.
       A = [ "203.0.113.1" ];
     };
 
-    remotes.secondary1    = { address = [ "198.51.100.2@53" ]; key = "xfr-secondary1"; };
-    secondaries.secondary1 = { address = [ "198.51.100.2@53" ]; key = "xfr-secondary1"; };
+    remotes.secondary1     = { address = [ "198.51.100.2@53" "2001:db8::2@53" ]; key = "xfr-secondary1"; };
+    secondaries.secondary1 = { address = [ "198.51.100.2@53" "2001:db8::2@53" ]; key = "xfr-secondary1"; };
 
     dynamicUpdate.acme = {
       key = "acme-updater";
@@ -52,91 +42,106 @@ not need outbound anything.
       allowedOwner = "_acme-challenge.example.com.";
     };
 
+    dnssec = {
+      algorithm = "ecdsap256sha256";
+      nsec3 = false;
+      zskLifetime = 2592000;
+      propagationDelay = 3600;
+      signatureLifetime = 1209600;
+      signatureRefresh = 604800;
+    };
+
     tsigKeyFiles = [ "/var/lib/secrets/knot-tsig.conf" ];
   };
 }
 ```
 
-A secondary is the same module with `role = "secondary"` and `primaries` set.
-Secondaries load no zone file — `zonefile-load: none` — because contents arrive
-by transfer and live in the journal.
-
-## Secrets
-
-TSIG secrets never appear in an option value. `tsigKeyFiles` points at files on
-the host holding `key:` sections; they are bind-mounted read-only into the
-container and included by Knot at runtime. Anything written into a Nix option
-lands in the world-readable store, and a TSIG secret there is a zone-transfer
-and dynamic-update credential handed to every local user.
-
-This does mean `knotc conf-check` cannot resolve those key references at build
-time. `knot-zones.checkConfig` substitutes placeholder secrets for the check
-only, so the structure is validated without the secrets being present — and its
-output is a receipt rather than the config file, so nobody deploys the
-placeholders by accident.
-
-## Dynamic update
-
-RFC 2136 updates are authorised per key, and narrowed by type and owner:
+## Secondary
 
 ```nix
-dynamicUpdate.acme = {
-  key = "acme-updater";
-  allowedTypes = [ "TXT" ];
-  allowedOwner = "_acme-challenge.example.com.";
+services.knotService = {
+  enable = true;
+  stateVersion = "25.11";
+  role = "secondary";
+  containerName = "knot-secondary";
+
+  hostAddress = "10.100.1.1";
+  localAddress = "10.100.1.2";
+
+  remotes.primary1  = { address = [ "198.51.100.1@53" ]; key = "xfr-primary1"; };
+  primaries.primary1 = { address = [ "198.51.100.1@53" ]; key = "xfr-primary1"; };
+
+  tsigKeyFiles = [ "/var/lib/secrets/knot-tsig.conf" ];
 };
 ```
 
-The default `allowedTypes` is `[ "A" "AAAA" "TXT" ]`. Narrowing an ACME key to
-`[ "TXT" ]` and one owner means a leaked dns-01 credential can answer challenges
-and nothing else — it cannot repoint an A record. An empty list permits every
-type, including NS and DNSKEY, which is almost never what you want.
+## Keys
 
-An `update` ACL with no key is rejected by an assertion: authorising by address
-alone is forgeable over UDP.
+```
+key:
+  - id: xfr-secondary1
+    algorithm: hmac-sha256
+    secret: <base64>
+  - id: acme-updater
+    algorithm: hmac-sha256
+    secret: <base64>
+```
 
-## DNSSEC defaults
+## Lockdown
 
-| | | |
-|---|---|---|
-| `algorithm` | `ecdsap256sha256` | Interoperable; smaller than RSA, better supported than ed25519 |
-| `nsec3` | `false` | NSEC3 only frustrates casual enumeration and costs a hash per negative answer. Iterations are pinned to 0 per RFC 9276 when enabled |
-| `kskLifetime` | `0` (no auto-roll) | A KSK roll needs a DS update at the parent, which Knot cannot do unattended without a configured submission |
-| `zskLifetime` | 30 days | Rolls automatically, no parent involvement |
-| `propagationDelay` | 1 hour | Must exceed your slowest secondary's refresh, or a rollover can outrun transfers and leave resolvers holding signatures for a key they cannot see |
-| `signatureLifetime` | 14 days | |
-| `signatureRefresh` | 7 days | The gap between the two is how long the server can be down before signatures expire and the zone goes dark for validating resolvers |
+Network:
 
-## Hardening
+- `privateNetwork = true` — the container gets its own network namespace, so the firewall below is its entire exposure rather than a filter layered over the host's interfaces.
+- Firewall enabled inside the container; `allowedTCPPorts = [ 53 ]` and `allowedUDPPorts = [ 53 ]`, plus 853 only when `enableDoT` / `enableQuic` are set.
+- `logRefusedConnections = true` — an unexpected outbound attempt is visible rather than silent.
+- `useHostResolvConf = false` and `nameservers = [ "127.0.0.1" ]` — it is the name service, so it resolves against itself and depends on nothing outside.
 
-Beyond what nixpkgs' `services.knot` already sets, the unit drops to
-`CAP_NET_BIND_SERVICE` alone, with `ProtectSystem=strict`,
-`ProtectProc=invisible`, `MemoryDenyWriteExecute`, a `@system-service` syscall
-filter minus `@privileged` and `@resources`, and `/var/lib/knot` as the only
-writable path. The container itself has no documentation, no default packages,
-no polkit, and does not use the host's `resolv.conf` — it is the name service,
-so it points at itself.
+Privileges:
 
-## Tests
+- `CapabilityBoundingSet` and `AmbientCapabilities` forced to `CAP_NET_BIND_SERVICE` alone — enough to bind port 53, nothing else.
+- `NoNewPrivileges`, `RestrictSUIDSGID`, `LockPersonality`, `RestrictRealtime`, `RestrictNamespaces`.
+- `SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ]`, `SystemCallArchitectures = "native"`.
+- `MemoryDenyWriteExecute` — no W^X pages for a compromised parser to use.
+- `RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ]`.
 
-`nix flake check` evaluates both a primary and a secondary, then runs the
-generated settings through `knotc conf-check`. It also asserts the properties
-that are supposed to be structural: that a primary always signs, that NSEC3
-iterations are 0, that a secondary loads no zone file, that the DDNS ACL is
-bound to a key and narrowed, that the firewall is DNS-only, that TSIG files are
-bind-mounted rather than copied, and that a secondary with no primary fails to
-evaluate.
+Filesystem:
 
-Two bugs were found by `conf-check` while writing this and would not have been
-caught by any amount of schema validation: Knot's `log` section is identified by
-`target` rather than `id`, and `zonefile-load: difference-no-serial` requires
-`journal-content: all`.
+- `ProtectSystem = "strict"` with `ReadWritePaths = [ "/var/lib/knot" ]` — the journal, KASP database and keys are the only writable state.
+- `StateDirectory = "knot"` at mode `0700`, `UMask = "0077"`.
+- `ProtectHome`, `PrivateTmp`, `PrivateDevices`.
+- `ProtectProc = "invisible"` and `ProcSubset = "pid"` — no visibility of other processes.
+- `ProtectKernelTunables`, `ProtectKernelModules`, `ProtectKernelLogs`, `ProtectControlGroups`, `ProtectClock`, `ProtectHostname`.
+- Zone storage is a read-only Nix store path; `zonefile-sync = -1` means Knot never attempts to write back to it.
 
-## Not yet done
+Secrets:
 
-There is no NixOS VM test that boots the container and resolves a query against
-it. The checks here validate configuration, not runtime behaviour.
+- TSIG secrets are never option values. `tsigKeyFiles` are bind-mounted read-only into the container and included by Knot at runtime, because anything in a Nix option lands in the world-readable store, where a TSIG secret is a zone-transfer and dynamic-update credential for every local user.
+- An assertion rejects a secondary with no TSIG key: transfers authorised by address alone are forgeable, and an unauthenticated AXFR hands over the whole zone.
+- An assertion rejects `dynamicUpdate` without `tsigKeyFiles`.
+
+Dynamic update:
+
+- Every update ACL is bound to a TSIG key; there is no address-only path.
+- `allowedTypes` defaults to `[ "A" "AAAA" "TXT" ]` and narrows further, so an ACME key restricted to `TXT` at one owner cannot repoint an A record.
+- `allowedOwner` pins updates to a single exact name.
+
+Surface removed:
+
+- `environment.defaultPackages` forced empty, `documentation` (nixos + man) disabled, `programs.command-not-found` disabled.
+- `security.polkit`, `services.udisks2`, `fonts.fontconfig`, `boot.enableContainers` and all `xdg.*` disabled.
+
+DNSSEC:
+
+- No `dnssec.enable = false` exists. Algorithm and rollover are tunable; unsigned is not reachable.
+- `nsec3-iterations` pinned to 0 per RFC 9276 whenever NSEC3 is used.
+- `kskLifetime` defaults to 0, no automatic KSK rollover, because rolling one needs a DS update at the parent that Knot cannot perform unattended.
+
+## Checks
+
+```console
+$ nix flake check
+```
 
 ## Licence
 
-MIT.
+MIT

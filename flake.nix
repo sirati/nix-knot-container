@@ -8,10 +8,8 @@
     # which nixpkgs only grew in 2024 -- so it does not evaluate against its
     # own lock. Consumers have to supply a newer lib.
     dns.inputs.nixpkgs.follows = "nixpkgs";
-    # Absolute, because a relative `path:../knot-zones` is resolved against the
-    # store copy of this flake once it is fetched, where the sibling does not
-    # exist. Repoint this at a URL when the repos are published, or override it
-    # with `--override-input knot-zones <path>`.
+    # Override with `--override-input knot-zones <path>` to build against a
+    # local checkout.
     knot-zones.url = "github:sirati/nix-dns-knot";
     knot-zones.inputs.nixpkgs.follows = "nixpkgs";
     knot-zones.inputs.dns.follows = "dns";
