@@ -83,11 +83,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1787301831,
-        "narHash": "sha256-YGHSwC5guqowPJX/fvOMu6nmwf6pZDlht8i68ahy8gQ=",
+        "lastModified": 1787303582,
+        "narHash": "sha256-dxHJpCBrtKXreQ2SBkjwr9Bbke/xPjQjVIfu5zuH+/w=",
         "owner": "sirati",
         "repo": "nix-dns-knot",
-        "rev": "878afeab46c5f1362d67f73f5c7528adb3e8c84e",
+        "rev": "79a72381a69af168acb315679162d807d26b6355",
         "type": "github"
       },
       "original": {

@@ -87,6 +87,63 @@ key:
     secret: <base64>
 ```
 
+## Emits
+
+```
+include: /var/lib/secrets/knot-tsig.conf
+
+server:
+    automatic-acl: on
+    listen: [ 0.0.0.0@53, "::@53" ]
+    rundir: "/run/knot"
+    user: knot:knot
+
+database:
+    journal-db: "/var/lib/knot/journal"
+    kasp-db: "/var/lib/knot/keys"
+    storage: "/var/lib/knot"
+    timer-db: "/var/lib/knot/timers"
+
+remote:
+  - id: secondary1
+    address: [ 198.51.100.2@53 ]
+    key: xfr-secondary1
+
+acl:
+  - id: ddns-acme
+    action: update
+    key: acme-updater
+    update-owner: name
+    update-owner-match: equal
+    update-owner-name: [ _acme-challenge.example.com. ]
+    update-type: [ TXT ]
+
+policy:
+  - id: signing
+    algorithm: ecdsap256sha256
+    ksk-lifetime: 0
+    nsec3: off
+    propagation-delay: 3600
+    rrsig-lifetime: 1209600
+    rrsig-refresh: 604800
+    zsk-lifetime: 2592000
+
+template:
+  - id: default
+    acl: [ ddns-acme ]
+    dnssec-policy: signing
+    dnssec-signing: on
+    journal-content: all
+    notify: [ secondary1 ]
+    storage: "/nix/store/...-knot-zones"
+    zonefile-load: difference-no-serial
+    zonefile-sync: -1
+
+zone:
+  - domain: example.com.
+    template: default
+```
+
 ## Lockdown
 
 Network:
@@ -115,7 +172,11 @@ Filesystem:
 
 Secrets:
 
-- TSIG secrets are never option values. `tsigKeyFiles` are bind-mounted read-only into the container and included by Knot at runtime, because anything in a Nix option lands in the world-readable store, where a TSIG secret is a zone-transfer and dynamic-update credential for every local user.
+- `tsigKeyFiles` is `types.listOf types.str`, deliberately not `types.path`. A bare path literal is copied into `/nix/store` with mode `0444` the moment it is interpolated, and nixpkgs' own `services.knot` builds its config with `"include: ${file}"` — so the option that exists to keep TSIG secrets out of the store will put one there if you omit the quotes. A string cannot be copied.
+- An assertion rejects any `tsigKeyFiles` entry under `builtins.storeDir`, and `knot-zones` throws on one as well, so a secret that reached the store by any route fails the build rather than shipping.
+- The files are bind-mounted read-only into the container and referenced from the config by path; they are never read at evaluation time.
+- DNSSEC private keys never come from Nix at all. Knot generates the KSK and ZSK itself into the KASP database at `/var/lib/knot/keys` on first sign, so there is no option through which one could be passed in.
+- The config is conf-checked with placeholder `key:` sections standing in for the real ones, and the shipped file contains neither the placeholders nor any `key:` section — only the `include:` line.
 - An assertion rejects a secondary with no TSIG key: transfers authorised by address alone are forgeable, and an unauthenticated AXFR hands over the whole zone.
 - An assertion rejects `dynamicUpdate` without `tsigKeyFiles`.
 
