@@ -38,14 +38,8 @@ let
         };
       };
 
-      remotes.secondary1 = {
-        address = [ "198.51.100.2@53" ];
-        key = "xfr-secondary1";
-      };
-      secondaries.secondary1 = {
-        address = [ "198.51.100.2@53" ];
-        key = "xfr-secondary1";
-      };
+      remotes.secondary1 = { address = [ "198.51.100.2@53" ]; key = "xfr-secondary1"; };
+      secondaries.secondary1 = { address = [ "198.51.100.2@53" ]; key = "xfr-secondary1"; };
 
       dynamicUpdate.acme = {
         key = "acme-updater";
@@ -71,9 +65,50 @@ let
     };
   };
 
+  nsec3Host = evalHost {
+    services.knotService = {
+      enable = true;
+      stateVersion = "25.11";
+      hostAddress = "10.100.2.1";
+      localAddress = "10.100.2.2";
+      dnssec.nsec3 = true;
+      zones."example.com".text = ''
+        $TTL 3600
+        example.com. IN SOA ns1.example.com. hostmaster.example.com. (1 3600 600 86400 60)
+        example.com. IN NS ns1.example.com.
+        ns1.example.com. IN A 203.0.113.2
+      '';
+    };
+  };
+
   innerOf = host: name: host.config.containers.${name}.config;
 
-  settingsOf = host: name: (innerOf host name).services.knot.settings;
+  # The file Knot actually reads. Producing it runs knotc conf-check, so
+  # referencing it at all is the validation.
+  configOf = host: name: (innerOf host name).services.knot.settingsFile;
+
+  # Assert against the generated config rather than the attrset behind it, so
+  # a rendering bug cannot slip past.
+  grepConfig = name: pattern: file:
+    pkgs.runCommand "check-${name}" { } ''
+      if grep -qE ${lib.escapeShellArg pattern} ${file}; then
+        echo ok > "$out"
+      else
+        echo "FAIL: ${name} -- nothing matching ${lib.escapeShellArg pattern}" >&2
+        cat ${file} >&2
+        exit 1
+      fi
+    '';
+
+  refuteConfig = name: pattern: file:
+    pkgs.runCommand "check-${name}" { } ''
+      if grep -qE ${lib.escapeShellArg pattern} ${file}; then
+        echo "FAIL: ${name} -- unexpected match for ${lib.escapeShellArg pattern}" >&2
+        cat ${file} >&2
+        exit 1
+      fi
+      echo ok > "$out"
+    '';
 
   assertEq = name: expected: actual:
     pkgs.runCommand "check-${name}" { } (
@@ -87,79 +122,90 @@ let
     );
 in
 {
-  # The whole point: the settings this module generates are a config Knot
-  # accepts. conf-check resolves every id reference and enforces Knot's
-  # pairwise constraints, so this catches far more than a schema would.
-  primary-config-is-valid = knotZones.checkConfig {
-    name = "knot-primary.conf";
-    settings = settingsOf primaryHost "knot";
-  };
+  # Building these runs conf-check. No separate opt-in step exists, and the
+  # file Knot reads cannot be produced without the check having passed.
+  primary-config-is-valid = configOf primaryHost "knot";
+  secondary-config-is-valid = configOf secondaryHost "knot-secondary";
 
-  secondary-config-is-valid = knotZones.checkConfig {
-    name = "knot-secondary.conf";
-    settings = settingsOf secondaryHost "knot-secondary";
-  };
+  # DNSSEC has no off switch, so a primary always comes out signing.
+  primary-signs = grepConfig "primary-signs" "^ +dnssec-signing: on$"
+    (configOf primaryHost "knot");
 
-  # DNSSEC is not an option that can be turned off, so a primary must always
-  # come out signing.
-  primary-signs = assertEq "primary-signs" true
-    (let t = builtins.head (settingsOf primaryHost "knot").template;
-     in t.dnssec-signing or false);
+  primary-uses-signing-policy = grepConfig "primary-uses-signing-policy" "^ +dnssec-policy: signing$"
+    (configOf primaryHost "knot");
 
-  primary-uses-signing-policy = assertEq "primary-uses-signing-policy" "signing"
-    (let t = builtins.head (settingsOf primaryHost "knot").template;
-     in t.dnssec-policy or null);
+  # RFC 9276: iterations must be 0 wherever NSEC3 is used.
+  nsec3-iterations-are-zero = grepConfig "nsec3-iterations-are-zero" "^ +nsec3-iterations: 0$"
+    (configOf nsec3Host "knot");
 
-  # RFC 9276: NSEC3 iterations must be 0 when NSEC3 is used at all.
-  nsec3-iterations-are-zero =
-    let
-      host = evalHost {
+  # A secondary has no zone file; contents arrive by transfer.
+  secondary-loads-no-zonefile = grepConfig "secondary-loads-no-zonefile" "^ +zonefile-load: none$"
+    (configOf secondaryHost "knot-secondary");
+
+  # Generated zones let Knot own the serial, and never write back to the store.
+  primary-lets-knot-own-serials = grepConfig "primary-lets-knot-own-serials" "^ +zonefile-load: difference-no-serial$"
+    (configOf primaryHost "knot");
+
+  primary-never-writes-to-store = grepConfig "primary-never-writes-to-store" "^ +zonefile-sync: -1$"
+    (configOf primaryHost "knot");
+
+  # The secrets are included from outside the store, and the placeholder used
+  # during the check must not survive into the shipped file.
+  config-includes-key-file = grepConfig "config-includes-key-file"
+    "^include: /var/lib/secrets/knot-tsig\\.conf$"
+    (configOf primaryHost "knot");
+
+  config-has-no-placeholder-secret = refuteConfig "config-has-no-placeholder-secret"
+    "dGVzdGtleXRlc3RrZXl0ZXN0a2V5dGVzdGtleTEyMz0="
+    (configOf primaryHost "knot");
+
+  config-has-no-key-section = refuteConfig "config-has-no-key-section" "^key:$"
+    (configOf primaryHost "knot");
+
+  # Dynamic update is bound to a key and narrowed to one type at one owner.
+  ddns-acl-is-restricted = grepConfig "ddns-acl-is-restricted" "^ +update-type: \\[ TXT \\]$"
+    (configOf primaryHost "knot");
+
+  ddns-acl-is-owner-scoped = grepConfig "ddns-acl-is-owner-scoped"
+    "^ +update-owner-name: \\[ _acme-challenge\\.example\\.com\\. \\]$"
+    (configOf primaryHost "knot");
+
+  ddns-acl-requires-key = grepConfig "ddns-acl-requires-key" "^ +key: acme-updater$"
+    (configOf primaryHost "knot");
+
+  # The container is the security boundary, so it needs its own netns.
+  container-has-private-network = assertEq "container-has-private-network" true
+    primaryHost.config.containers.knot.privateNetwork;
+
+  firewall-is-dns-only = assertEq "firewall-is-dns-only"
+    { tcp = [ 53 ]; udp = [ 53 ]; }
+    (let n = (innerOf primaryHost "knot").networking.firewall;
+     in { tcp = n.allowedTCPPorts; udp = n.allowedUDPPorts; });
+
+  tsig-keys-are-bind-mounted = assertEq "tsig-keys-are-bind-mounted"
+    { hostPath = "/var/lib/secrets/knot-tsig.conf"; isReadOnly = true; }
+    (let m = primaryHost.config.containers.knot.bindMounts."/var/lib/secrets/knot-tsig.conf";
+     in { inherit (m) hostPath isReadOnly; });
+
+  # A TSIG secret in the store is readable by every user on the machine.
+  rejects-tsig-key-in-store = assertEq "rejects-tsig-key-in-store" true
+    (let
+      bad = evalHost {
         services.knotService = {
           enable = true;
           stateVersion = "25.11";
-          hostAddress = "10.100.2.1";
-          localAddress = "10.100.2.2";
-          dnssec.nsec3 = true;
+          hostAddress = "10.100.4.1";
+          localAddress = "10.100.4.2";
           zones."example.com".text = ''
             $TTL 3600
             example.com. IN SOA ns1.example.com. hostmaster.example.com. (1 3600 600 86400 60)
             example.com. IN NS ns1.example.com.
             ns1.example.com. IN A 203.0.113.2
           '';
+          tsigKeyFiles = [ "${builtins.storeDir}/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-tsig.conf" ];
         };
       };
-      p = builtins.head (settingsOf host "knot").policy;
-    in
-    assertEq "nsec3-iterations-are-zero" 0 (p.nsec3-iterations or null);
-
-  # A secondary has no zone file to load; contents arrive by transfer.
-  secondary-loads-no-zonefile = assertEq "secondary-loads-no-zonefile" "none"
-    (let t = builtins.head (settingsOf secondaryHost "knot-secondary").template;
-     in t.zonefile-load or null);
-
-  # Dynamic update must be bound to a key and, here, to one type and one owner.
-  ddns-acl-is-restricted = assertEq "ddns-acl-is-restricted"
-    { id = "ddns-acme"; key = "acme-updater"; action = "update";
-      update-type = [ "TXT" ];
-      update-owner = "name"; update-owner-match = "equal";
-      update-owner-name = [ "_acme-challenge.example.com." ]; }
-    (builtins.head (settingsOf primaryHost "knot").acl);
-
-  # The container is the security boundary, so it must have its own netns.
-  container-has-private-network = assertEq "container-has-private-network" true
-    primaryHost.config.containers.knot.privateNetwork;
-
-  # Only what a nameserver needs.
-  firewall-is-dns-only = assertEq "firewall-is-dns-only"
-    { tcp = [ 53 ]; udp = [ 53 ]; }
-    (let n = (innerOf primaryHost "knot").networking.firewall;
-     in { tcp = n.allowedTCPPorts; udp = n.allowedUDPPorts; });
-
-  # TSIG secrets are bind-mounted from outside, never copied into the store.
-  tsig-keys-are-bind-mounted = assertEq "tsig-keys-are-bind-mounted"
-    { hostPath = "/var/lib/secrets/knot-tsig.conf"; isReadOnly = true; }
-    (let m = primaryHost.config.containers.knot.bindMounts."/var/lib/secrets/knot-tsig.conf";
-     in { inherit (m) hostPath isReadOnly; });
+    in !(builtins.tryEval bad.config.system.build.toplevel).success);
 
   # A secondary with no primary would silently serve nothing.
   rejects-secondary-without-primary = assertEq "rejects-secondary-without-primary" true

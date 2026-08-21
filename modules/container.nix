@@ -83,15 +83,6 @@ let
     };
   };
 
-  # Zones the container serves from files.
-  built = knotZones.mkZones {
-    name = "${cfg.containerName}-zones";
-    zones = lib.mapAttrs
-      (_: z: {
-        inherit (z) zone text primary dnssec;
-      })
-      cfg.zones;
-  };
 
   tsigKeyRefs = lib.filter (k: k != null) (map (r: r.key) (builtins.attrValues cfg.remotes));
 
@@ -133,9 +124,11 @@ let
     single-type-signing = true;
   };
 
-  templateEntry = { id = "default"; }
-    // built.templateSettings
-    // lib.optionalAttrs (cfg.role == "primary") {
+  # Role-specific template settings. The storage path, zonefile-load,
+  # journal-content and zonefile-sync come from knot-zones, which knows how the
+  # zones were built; restating them here would be a second source of truth.
+  templateExtras =
+    lib.optionalAttrs (cfg.role == "primary") {
       dnssec-signing = true;
       dnssec-policy = "signing";
       notify = map (r: r.id) (builtins.attrValues cfg.secondaries);
@@ -149,7 +142,7 @@ let
       journal-content = "all";
     };
 
-  knotSettings = lib.mkMerge [
+  baseSettings = lib.recursiveUpdate
     {
       server = {
         rundir = "/run/knot";
@@ -172,11 +165,19 @@ let
       remote = remoteEntries;
       acl = ddnsAcls;
       policy = [ policyEntry ];
-      template = [ templateEntry ];
-      zone = built.zoneEntries;
     }
-    cfg.extraSettings
-  ];
+    cfg.extraSettings;
+
+  # Zones, storage and the complete configuration in one step. `configFile` is
+  # the output of a derivation that ran `knotc conf-check` first, so the file
+  # Knot reads cannot exist unless the configuration validated.
+  built = knotZones.mkZones {
+    name = "${cfg.containerName}-zones";
+    zones = lib.mapAttrs (_: z: { inherit (z) zone text primary dnssec; }) cfg.zones;
+    template = templateExtras;
+    settings = baseSettings;
+    keyFiles = cfg.tsigKeyFiles;
+  };
 
   # The NixOS configuration running *inside* the container.
   containerConfig = { ... }: {
@@ -185,8 +186,15 @@ let
     services.knot = {
       enable = true;
       package = cfg.package;
-      settings = knotSettings;
-      keyFiles = cfg.tsigKeyFiles;
+      # settingsFile rather than settings, because the file has already been
+      # conf-checked. nixpkgs' own check switches itself off whenever keyFiles
+      # is used (`default = cfg.keyFiles == [] && !cfg.enableXDP`), which is
+      # precisely when TSIG secrets are being kept out of the store -- so
+      # relying on it would mean no validation at all here. keyFiles is left
+      # empty because the include: directives are already in the file.
+      settingsFile = built.configFile;
+      settings = { };
+      keyFiles = [ ];
     };
 
     networking = {
@@ -353,15 +361,25 @@ in
     };
 
     tsigKeyFiles = mkOption {
-      type = types.listOf types.path;
+      # types.str, deliberately not types.path.
+      #
+      # types.path accepts a bare path literal, and nixpkgs' own
+      # services.knot builds its config with `"include: ${file}"` -- which,
+      # for a path *value*, copies the file into /nix/store with mode 0444.
+      # The option that exists to keep TSIG secrets out of the store will
+      # cheerfully put one there if you forget the quotes. A string cannot be
+      # copied, and the assertion below rejects a store path outright.
+      type = types.listOf types.str;
       default = [ ];
-      example = lib.literalExpression ''[ "/var/lib/secrets/knot-tsig.conf" ]'';
+      example = [ "/var/lib/secrets/knot-tsig.conf" ];
       description = ''
-        Files included into the Knot config at runtime, holding `key:` sections
-        with their secrets. These must be paths on the container's filesystem,
-        not Nix paths -- anything in the store is world-readable, and a TSIG
-        secret in the store is a transfer and dynamic-update credential handed
-        to every user on the machine.
+        Files Knot includes at runtime, holding `key:` sections with their
+        secrets. Give locations as strings, and deploy the files by some means
+        Nix never sees -- agenix, sops-nix, or plain scp.
+
+        A TSIG secret in the Nix store is a zone-transfer and dynamic-update
+        credential readable by every user on the machine, so a store path here
+        is an error rather than a warning.
       '';
     };
 
@@ -501,6 +519,24 @@ in
 
   config = mkIf cfg.enable {
     assertions = [
+      {
+        assertion = builtins.all (p: !(lib.hasPrefix builtins.storeDir p)) cfg.tsigKeyFiles;
+        message = ''
+          services.knotService: a tsigKeyFiles entry points into the Nix store.
+
+          Everything in the store is world-readable, so a TSIG secret there is a
+          zone-transfer and dynamic-update credential for every user on this
+          machine. This is what happens when a bare path literal is used, since
+          Nix copies those into the store on interpolation. Quote the path and
+          deploy the file outside Nix:
+
+            tsigKeyFiles = [ "/var/lib/secrets/knot-tsig.conf" ];
+        '';
+      }
+      {
+        assertion = builtins.all (p: lib.hasPrefix "/" p) cfg.tsigKeyFiles;
+        message = "services.knotService: tsigKeyFiles entries must be absolute paths; Knot reads them at runtime.";
+      }
       {
         assertion = cfg.role == "secondary" -> cfg.primaries != { };
         message = "services.knotService: role is \"secondary\" but no primaries are configured, so no zone would ever be transferred.";
