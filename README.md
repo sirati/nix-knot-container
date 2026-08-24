@@ -1,6 +1,12 @@
 # knot-service
 
-A NixOS container that runs Knot DNS from zone files only — no SQL, Redis or Valkey backend — always DNSSEC-signed, as primary or secondary, with TSIG-authenticated transfers and scoped RFC 2136 dynamic update.
+Knot DNS from zone files only — no SQL, Redis or Valkey backend — always DNSSEC-signed, as primary or secondary, with TSIG-authenticated transfers and scoped RFC 2136 dynamic update.
+
+Runs in a [prison](https://github.com/sirati/NixOS-Container-Podman) by
+default: a podman container with no shell, no coreutils, no package manager and
+no init of its own, holding one capability (`CAP_NET_BIND_SERVICE`) and a
+default-drop firewall. `backend = "nspawn"` selects a full NixOS container
+instead.
 
 ## Input
 
@@ -21,11 +27,7 @@ inputs = {
 
   services.knotService = {
     enable = true;
-    stateVersion = "25.11";
     role = "primary";
-
-    hostAddress = "10.100.0.1";
-    localAddress = "10.100.0.2";
 
     zones."example.com".zone = {
       SOA = { nameServer = "ns1.example.com."; adminEmail = "hostmaster@example.com"; serial = 1; };
@@ -61,12 +63,8 @@ inputs = {
 ```nix
 services.knotService = {
   enable = true;
-  stateVersion = "25.11";
   role = "secondary";
   containerName = "knot-secondary";
-
-  hostAddress = "10.100.1.1";
-  localAddress = "10.100.1.2";
 
   remotes.primary1  = { address = [ "198.51.100.1@53" ]; key = "xfr-primary1"; };
   primaries.primary1 = { address = [ "198.51.100.1@53" ]; key = "xfr-primary1"; };
@@ -163,6 +161,21 @@ knot-service: TSIG key file /var/lib/secrets/knot-tsig.conf does not exist. It i
 A malformed or unreadable secret therefore fails the unit with a named cause, rather than as a `knotd` startup error or a transfer that silently never authenticates.
 
 ## Lockdown
+
+In the prison backend the container itself is the boundary:
+
+| | |
+|---|---|
+| capabilities | `CAP_NET_BIND_SERVICE` and nothing else |
+| root filesystem | read-only; no shell, no coreutils, no package manager |
+| network | its own namespace, default-drop in and out |
+| inbound | 53/tcp and 53/udp only (853 with DoT/QUIC) |
+| outbound | the declared remotes on their DNS port, nothing else |
+| writable | `/var/lib/knot` and a tmpfs rundir, both `noexec,nosuid,nodev` |
+| store | knotd's own closure, served read-only through a symlink farm |
+| secrets | each TSIG key file bound in read-only, one file at a time |
+
+The `nspawn` backend is a full NixOS container. What it does instead:
 
 Network:
 
