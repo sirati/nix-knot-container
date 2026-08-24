@@ -1,5 +1,25 @@
 {
   "nodes": {
+    "containers": {
+      "inputs": {
+        "nixpkgs": [
+          "nixpkgs"
+        ]
+      },
+      "locked": {
+        "lastModified": 1787574730,
+        "narHash": "sha256-AposN+vS7krBAPWRLoi0Vlpo3GqueI3QLm420LCGQ3o=",
+        "owner": "sirati",
+        "repo": "NixOS-Container-Podman",
+        "rev": "0a98f04295b08a90494f2f0cf7ef95fac325593d",
+        "type": "github"
+      },
+      "original": {
+        "owner": "sirati",
+        "repo": "NixOS-Container-Podman",
+        "type": "github"
+      }
+    },
     "dns": {
       "inputs": {
         "flake-utils": "flake-utils",
@@ -114,6 +134,7 @@
     },
     "root": {
       "inputs": {
+        "containers": "containers",
         "dns": "dns",
         "flake-utils": "flake-utils_2",
         "knot-zones": "knot-zones",

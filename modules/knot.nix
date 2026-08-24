@@ -1,4 +1,5 @@
-# A NixOS container that runs Knot DNS and nothing else.
+# Knot DNS as a locked-down service: options, zone/config assembly, and the
+# checks that do not depend on which backend runs it.
 #
 # Design constraints, all deliberate:
 #
@@ -142,18 +143,21 @@ let
       journal-content = "all";
     };
 
-  baseSettings = lib.recursiveUpdate
+  # `user` and `logTarget` are the two settings that depend on what is running
+  # the server. A prison has no `knot` account to drop to -- the container is
+  # already unprivileged -- and no syslog to write to.
+  baseSettings = { user, logTarget }: lib.recursiveUpdate
     {
       server = {
         rundir = "/run/knot";
-        user = "knot:knot";
+
         listen = cfg.listen;
         # Derives transfer/notify ACLs from the configured remotes, so a peer
         # listed once does not also need a hand-written acl block.
         automatic-acl = true;
-      };
+      } // lib.optionalAttrs (user != null) { inherit user; };
 
-      log = [{ target = "syslog"; server = cfg.logLevel; zone = cfg.logLevel; }];
+      log = [{ target = logTarget; server = cfg.logLevel; zone = cfg.logLevel; }];
 
       database = {
         storage = "/var/lib/knot";
@@ -171,12 +175,12 @@ let
   # Zones, storage and the complete configuration in one step. `configFile` is
   # the output of a derivation that ran `knotc conf-check` first, so the file
   # Knot reads cannot exist unless the configuration validated.
-  built = knotZones.mkZones {
+  mkSettings = { keyFiles, user ? "knot:knot", logTarget ? "syslog" }: knotZones.mkZones {
     name = "${cfg.containerName}-zones";
     zones = lib.mapAttrs (_: z: { inherit (z) zone text primary dnssec; }) cfg.zones;
     template = templateExtras;
-    settings = baseSettings;
-    keyFiles = cfg.tsigKeyFiles;
+    settings = baseSettings { inherit user logTarget; };
+    inherit keyFiles;
   };
 
   # The half of validation that cannot happen at build time.
@@ -188,7 +192,7 @@ let
   # the store. So it is checked here instead, before knotd starts, with the
   # real files in place. A broken or unreadable secret fails the unit with a
   # named cause rather than a knotd startup error.
-  tsigPreflight = pkgs.writeShellScript "knot-tsig-preflight" ''
+  mkPreflight = configFile: pkgs.writeShellScript "knot-tsig-preflight" ''
     set -eu
     fail() { echo "knot-service: $*" >&2; exit 1; }
 
@@ -213,98 +217,33 @@ let
 
     # Now the real thing: the same config the build checked, but with the
     # actual key files resolved through their include: directives.
-    exec ${cfg.package}/bin/knotc --config=${built.configFile} conf-check
+    exec ${cfg.package}/bin/knotc --config=${configFile} conf-check
   '';
 
-  # The NixOS configuration running *inside* the container.
-  containerConfig = { ... }: {
-    system.stateVersion = cfg.stateVersion;
-
-    services.knot = {
-      enable = true;
-      package = cfg.package;
-      # settingsFile rather than settings, because the file has already been
-      # conf-checked. nixpkgs' own check switches itself off whenever keyFiles
-      # is used (`default = cfg.keyFiles == [] && !cfg.enableXDP`), which is
-      # precisely when TSIG secrets are being kept out of the store -- so
-      # relying on it would mean no validation at all here. keyFiles is left
-      # empty because the include: directives are already in the file.
-      settingsFile = built.configFile;
-      settings = { };
-      keyFiles = [ ];
-    };
-
-    networking = {
-      firewall = {
-        enable = true;
-        allowedTCPPorts = [ 53 ] ++ lib.optional cfg.enableDoT 853;
-        allowedUDPPorts = [ 53 ] ++ lib.optional cfg.enableQuic 853;
-        # A nameserver answers; it does not browse. Logging rejects makes an
-        # unexpected outbound attempt visible rather than silent.
-        logRefusedConnections = true;
-      };
-      useHostResolvConf = false;
-      # Resolving names is not this container's job -- it *is* the name
-      # service. Pointing it at itself avoids a dependency on anything outside.
-      nameservers = [ "127.0.0.1" ];
-    };
-
-    # Everything below strips the container to a nameserver and nothing else.
-    documentation.enable = false;
-    documentation.nixos.enable = false;
-    documentation.man.enable = false;
-    environment.defaultPackages = lib.mkForce [ ];
-    programs.command-not-found.enable = false;
-    services.udisks2.enable = false;
-    security.polkit.enable = lib.mkForce false;
-    xdg.autostart.enable = false;
-    xdg.icons.enable = false;
-    xdg.mime.enable = false;
-    xdg.sounds.enable = false;
-    fonts.fontconfig.enable = lib.mkForce false;
-    boot.enableContainers = false;
-
-    # nixpkgs already hardens knot.service; these tighten what a compromised
-    # parser can reach. Knot needs CAP_NET_BIND_SERVICE for port 53 and,
-    # with XDP disabled, nothing else.
-    systemd.services.knot.serviceConfig = {
-      # Runs as the knot user under the same hardening as knotd, so a
-      # permission problem surfaces here with a named cause instead of as a
-      # later failure to sign or transfer.
-      ExecStartPre = [ "${tsigPreflight}" ];
-      CapabilityBoundingSet = lib.mkForce [ "CAP_NET_BIND_SERVICE" ];
-      AmbientCapabilities = lib.mkForce [ "CAP_NET_BIND_SERVICE" ];
-      NoNewPrivileges = true;
-      PrivateDevices = true;
-      PrivateTmp = true;
-      ProtectClock = true;
-      ProtectControlGroups = true;
-      ProtectHome = true;
-      ProtectHostname = true;
-      ProtectKernelLogs = true;
-      ProtectKernelModules = true;
-      ProtectKernelTunables = true;
-      ProtectProc = "invisible";
-      ProcSubset = "pid";
-      ProtectSystem = "strict";
-      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
-      RestrictNamespaces = true;
-      RestrictRealtime = true;
-      RestrictSUIDSGID = true;
-      LockPersonality = true;
-      MemoryDenyWriteExecute = true;
-      SystemCallArchitectures = "native";
-      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
-      UMask = "0077";
-      # Signing keys and the journal. Everything else stays read-only.
-      StateDirectory = "knot";
-      StateDirectoryMode = "0700";
-      ReadWritePaths = [ "/var/lib/knot" ];
-    };
-  };
 in
 {
   options.services.knotService = {
+
+    backend = mkOption {
+      type = types.enum [ "prison" "nspawn" ];
+      default = "prison";
+      description = ''
+        Which container runs Knot. `prison` is a default-deny podman container
+        with no shell, no coreutils and no init of its own; `nspawn` is a full
+        NixOS container.
+      '';
+    };
+
+    stateDir = mkOption {
+      type = types.str;
+      default = "/var/lib/${cfg.containerName}/knot";
+      defaultText = "/var/lib/\${containerName}/knot";
+      description = ''
+        Host directory holding Knot's journal, timers and KASP database --
+        which is where the DNSSEC private keys live, so it must be backed up
+        and must survive a redeploy. `prison` backend only.
+      '';
+    };
     enable = mkEnableOption "a locked-down NixOS container running Knot DNS";
 
     containerName = mkOption {
@@ -557,7 +496,6 @@ in
       description = "Merged into the generated Knot settings, for anything not modelled here.";
     };
   };
-
   config = mkIf cfg.enable {
     assertions = [
       {
@@ -609,23 +547,8 @@ in
       }
     ];
 
-    containers.${cfg.containerName} = {
-      autoStart = true;
-      # Its own netns: the firewall below is then the container's whole
-      # exposure, not a filter layered over the host's interfaces.
-      privateNetwork = true;
-      inherit (cfg) hostAddress localAddress hostAddress6 localAddress6;
-
-      # TSIG secrets are bind-mounted rather than copied, so they never enter
-      # the store or a container image.
-      bindMounts = lib.listToAttrs (map
-        (p: lib.nameValuePair (toString p) {
-          hostPath = toString p;
-          isReadOnly = true;
-        })
-        cfg.tsigKeyFiles);
-
-      config = containerConfig;
-    };
+    # Both backends build the same configuration; they differ only in where
+    # the key files are readable from, so the settings are a function of that.
+    _module.args.knotLib = { inherit mkSettings mkPreflight; };
   };
 }

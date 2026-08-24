@@ -13,17 +13,22 @@
     knot-zones.url = "github:sirati/nix-dns-knot";
     knot-zones.inputs.nixpkgs.follows = "nixpkgs";
     knot-zones.inputs.dns.follows = "dns";
+    # The prison primitive and its NixOS module.
+    containers.url = "github:sirati/NixOS-Container-Podman";
+    containers.inputs.nixpkgs.follows = "nixpkgs";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
-  outputs = { self, nixpkgs, dns, knot-zones, flake-utils }:
+  outputs = { self, nixpkgs, dns, knot-zones, containers, flake-utils }:
     {
       nixosModules.default = { pkgs, lib, ... }: {
-        imports = [ ./modules/container.nix ];
-        # mkDefault so a consumer with their own knot-zones checkout can
-        # override it without forking this module.
+        imports = [ ./modules containers.nixosModules.prisons ];
+        # mkDefault so a consumer with their own checkout can override either
+        # without forking this module.
         _module.args.knotZones =
           lib.mkDefault knot-zones.lib.${pkgs.stdenv.hostPlatform.system};
+        _module.args.prison =
+          lib.mkDefault containers.lib.${pkgs.stdenv.hostPlatform.system};
       };
 
       nixosModules.knotService = self.nixosModules.default;
