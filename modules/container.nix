@@ -179,6 +179,43 @@ let
     keyFiles = cfg.tsigKeyFiles;
   };
 
+  # The half of validation that cannot happen at build time.
+  #
+  # The build checks everything that does not depend on a secret: placeholder
+  # `key:` sections stand in, and conf-check verifies the whole structure.
+  # What it cannot see is whether the real key files exist, are readable by
+  # knot, are not world-readable, and parse -- because none of that may be in
+  # the store. So it is checked here instead, before knotd starts, with the
+  # real files in place. A broken or unreadable secret fails the unit with a
+  # named cause rather than a knotd startup error.
+  tsigPreflight = pkgs.writeShellScript "knot-tsig-preflight" ''
+    set -eu
+    fail() { echo "knot-service: $*" >&2; exit 1; }
+
+    for f in ${lib.escapeShellArgs cfg.tsigKeyFiles}; do
+      [ -e "$f" ] || fail "TSIG key file $f does not exist. It is deployed outside Nix, so nothing in the build could have caught this."
+      [ -f "$f" ] || fail "TSIG key file $f is not a regular file."
+
+      real=$(${pkgs.coreutils}/bin/readlink -f "$f")
+      case "$real" in
+        ${builtins.storeDir}/*)
+          fail "TSIG key file $f resolves to $real, inside the Nix store, where it is world-readable."
+          ;;
+      esac
+
+      perm=$(${pkgs.coreutils}/bin/stat -Lc '%a' "$f")
+      if [ $(( 8#$perm & 8#004 )) -ne 0 ]; then
+        fail "TSIG key file $f is world-readable (mode $perm). Use 0640 root:knot, or 0400 owned by knot."
+      fi
+
+      [ -r "$f" ] || fail "TSIG key file $f is not readable by the knot user (mode $perm). Signing and transfers would fail at the first use."
+    done
+
+    # Now the real thing: the same config the build checked, but with the
+    # actual key files resolved through their include: directives.
+    exec ${cfg.package}/bin/knotc --config=${built.configFile} conf-check
+  '';
+
   # The NixOS configuration running *inside* the container.
   containerConfig = { ... }: {
     system.stateVersion = cfg.stateVersion;
@@ -231,6 +268,10 @@ let
     # parser can reach. Knot needs CAP_NET_BIND_SERVICE for port 53 and,
     # with XDP disabled, nothing else.
     systemd.services.knot.serviceConfig = {
+      # Runs as the knot user under the same hardening as knotd, so a
+      # permission problem surfaces here with a named cause instead of as a
+      # later failure to sign or transfer.
+      ExecStartPre = [ "${tsigPreflight}" ];
       CapabilityBoundingSet = lib.mkForce [ "CAP_NET_BIND_SERVICE" ];
       AmbientCapabilities = lib.mkForce [ "CAP_NET_BIND_SERVICE" ];
       NoNewPrivileges = true;

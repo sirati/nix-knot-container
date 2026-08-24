@@ -81,6 +81,27 @@ let
     };
   };
 
+  preflightHost = evalHost {
+    services.knotService = {
+      enable = true;
+      stateVersion = "25.11";
+      hostAddress = "10.100.5.1";
+      localAddress = "10.100.5.2";
+      zones."example.com".text = ''
+        $TTL 3600
+        example.com. IN SOA ns1.example.com. hostmaster.example.com. (1 3600 600 86400 60)
+        example.com. IN NS ns1.example.com.
+        ns1.example.com. IN A 203.0.113.2
+      '';
+      remotes.secondary1 = { address = [ "198.51.100.2@53" ]; key = "xfr-secondary1"; };
+      secondaries.secondary1 = { address = [ "198.51.100.2@53" ]; key = "xfr-secondary1"; };
+      tsigKeyFiles = [ "/tmp/knot-tsig-test.conf" ];
+    };
+  };
+
+  preflightScript = builtins.head
+    preflightHost.config.containers.knot.config.systemd.services.knot.serviceConfig.ExecStartPre;
+
   innerOf = host: name: host.config.containers.${name}.config;
 
   # The file Knot actually reads. Producing it runs knotc conf-check, so
@@ -220,4 +241,76 @@ in
         };
       };
     in !(builtins.tryEval bad.config.system.build.toplevel).success);
+
+  # --- activation-time checking of the secret ---------------------------------
+  #
+  # The build validates everything that does not depend on a secret. These
+  # exercise the other half: the preflight that runs before knotd, with the
+  # real key files present. The test secret is generated inside the sandbox
+  # from /dev/urandom, so no key material exists in the store even here.
+
+  preflight-accepts-a-good-key = pkgs.runCommand "check-preflight-accepts-a-good-key"
+    { nativeBuildInputs = [ pkgs.knot-dns pkgs.coreutils ]; } ''
+    mkdir -p /tmp
+    { echo "key:"
+      echo "  - id: xfr-secondary1"
+      echo "    algorithm: hmac-sha256"
+      echo "    secret: $(head -c 32 /dev/urandom | base64 -w0)"
+    } > /tmp/knot-tsig-test.conf
+    chmod 0400 /tmp/knot-tsig-test.conf
+    ${preflightScript}
+    echo ok > $out
+  '';
+
+  preflight-rejects-world-readable-key = pkgs.runCommand "check-preflight-rejects-world-readable-key"
+    { nativeBuildInputs = [ pkgs.knot-dns pkgs.coreutils ]; } ''
+    mkdir -p /tmp
+    { echo "key:"
+      echo "  - id: xfr-secondary1"
+      echo "    algorithm: hmac-sha256"
+      echo "    secret: $(head -c 32 /dev/urandom | base64 -w0)"
+    } > /tmp/knot-tsig-test.conf
+    chmod 0644 /tmp/knot-tsig-test.conf
+    if ${preflightScript} 2>err; then
+      echo "FAIL: a world-readable TSIG key was accepted" >&2
+      exit 1
+    fi
+    grep -q 'world-readable' err || { echo "FAIL: wrong reason:" >&2; cat err >&2; exit 1; }
+    cat err >&2
+    echo ok > $out
+  '';
+
+  preflight-rejects-missing-key = pkgs.runCommand "check-preflight-rejects-missing-key"
+    { nativeBuildInputs = [ pkgs.knot-dns pkgs.coreutils ]; } ''
+    rm -f /tmp/knot-tsig-test.conf
+    if ${preflightScript} 2>err; then
+      echo "FAIL: a missing TSIG key file was accepted" >&2
+      exit 1
+    fi
+    grep -q 'does not exist' err || { echo "FAIL: wrong reason:" >&2; cat err >&2; exit 1; }
+    cat err >&2
+    echo ok > $out
+  '';
+
+  # A key file that parses but names a key the config never references is not
+  # what breaks; a malformed one is. conf-check sees the real file here.
+  preflight-rejects-malformed-key = pkgs.runCommand "check-preflight-rejects-malformed-key"
+    { nativeBuildInputs = [ pkgs.knot-dns pkgs.coreutils ]; } ''
+    mkdir -p /tmp
+    printf 'key:\n  - id: xfr-secondary1\n    algorithm: hmac-sha256\n    secret: not!valid!base64\n' \
+      > /tmp/knot-tsig-test.conf
+    chmod 0400 /tmp/knot-tsig-test.conf
+    if ${preflightScript} 2>err; then
+      echo "FAIL: a malformed TSIG secret was accepted" >&2
+      exit 1
+    fi
+    cat err >&2
+    echo ok > $out
+  '';
+
+  # The preflight has to actually be wired into the unit, or none of the above
+  # runs in production.
+  preflight-is-wired-into-the-unit = assertEq "preflight-is-wired-into-the-unit" 1
+    (builtins.length
+      (innerOf primaryHost "knot").systemd.services.knot.serviceConfig.ExecStartPre);
 }
