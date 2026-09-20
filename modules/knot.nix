@@ -17,96 +17,46 @@
 #     and nothing else. A nameserver needs to answer queries and talk to its
 #     peers; it does not need outbound anything.
 
-{ config, lib, pkgs, knotZones, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  knotZones,
+  ...
+}:
 
 let
   cfg = config.services.knotService;
 
-  inherit (lib) mkOption mkEnableOption types mkIf;
-
-  remoteType = types.submodule ({ name, ... }: {
-    options = {
-      id = mkOption {
-        type = types.str;
-        default = name;
-        description = "Knot remote identifier.";
-      };
-      address = mkOption {
-        type = types.listOf types.str;
-        example = [ "198.51.100.2@53" "2001:db8::2@53" ];
-        description = ''
-          Addresses of the peer, in Knot's `address@port` form. Listing both
-          an IPv4 and IPv6 address is normal; Knot tries them in order.
-        '';
-      };
-      key = mkOption {
-        type = types.nullOr types.str;
-        default = null;
-        example = "xfr-secondary1";
-        description = ''
-          Identifier of the TSIG key used with this peer. The key's secret must
-          come from `tsigKeyFiles`, never from here -- anything written in this
-          option lands in the world-readable Nix store.
-        '';
-      };
-    };
-  });
-
-  zoneSpecType = types.submodule {
-    options = {
-      zone = mkOption {
-        type = types.nullOr (types.attrsOf types.anything);
-        default = null;
-        description = "A dns.nix zone attrset, validated at build time.";
-      };
-      text = mkOption {
-        type = types.nullOr types.lines;
-        default = null;
-        description = "A literal RFC 1035 zone file, validated at build time.";
-      };
-      primary = mkOption {
-        type = types.bool;
-        default = cfg.role == "primary";
-        description = ''
-          Whether this server holds the zone's contents. Secondary zones are
-          declared so Knot transfers them, and contribute no file to storage.
-        '';
-      };
-      dnssec = mkOption {
-        type = types.enum [ "auto" "on" "off" ];
-        default = "off";
-        description = ''
-          Whether kzonecheck enforces DNSSEC checks on the *source* zone.
-          Defaults to "off" because Knot signs these zones itself -- the
-          source is unsigned by design and there is nothing yet to check.
-        '';
-      };
-    };
-  };
-
+  inherit (lib)
+    mkIf
+    ;
 
   tsigKeyRefs = lib.filter (k: k != null) (map (r: r.key) (builtins.attrValues cfg.remotes));
 
   # RFC 2136 dynamic update. Restricted by TSIG key and, where given, by record
   # type -- an update ACL with no type restriction lets whoever holds the key
   # rewrite NS and DNSKEY records, which is rarely what a DDNS client needs.
-  ddnsAcls = lib.mapAttrsToList
-    (name: d: {
+  ddnsAcls = lib.mapAttrsToList (
+    name: d:
+    {
       id = "ddns-${name}";
       key = d.key;
       action = "update";
-    } // lib.optionalAttrs (d.allowedTypes != [ ]) {
+    }
+    // lib.optionalAttrs (d.allowedTypes != [ ]) {
       update-type = d.allowedTypes;
-    } // lib.optionalAttrs (d.allowedOwner != null) {
+    }
+    // lib.optionalAttrs (d.allowedOwner != null) {
       update-owner = "name";
       update-owner-match = "equal";
       update-owner-name = [ d.allowedOwner ];
-    })
-    cfg.dynamicUpdate;
+    }
+  ) cfg.dynamicUpdate;
 
-  remoteEntries = lib.mapAttrsToList
-    (_: r: { inherit (r) id address; } // lib.optionalAttrs (r.key != null) { inherit (r) key; })
-    cfg.remotes;
+  remoteEntries = lib.mapAttrsToList (
+    _: r: { inherit (r) id address; } // lib.optionalAttrs (r.key != null) { inherit (r) key; }
+  ) cfg.remotes;
 
   policyEntry = {
     id = "signing";
@@ -117,11 +67,13 @@ let
     propagation-delay = cfg.dnssec.propagationDelay;
     rrsig-lifetime = cfg.dnssec.signatureLifetime;
     rrsig-refresh = cfg.dnssec.signatureRefresh;
-  } // lib.optionalAttrs cfg.dnssec.nsec3 {
+  }
+  // lib.optionalAttrs cfg.dnssec.nsec3 {
     # RFC 9276: iterations above 0 buy nothing and cost the server work an
     # attacker can amplify.
     nsec3-iterations = 0;
-  } // lib.optionalAttrs cfg.dnssec.singleType {
+  }
+  // lib.optionalAttrs cfg.dnssec.singleType {
     single-type-signing = true;
   };
 
@@ -146,8 +98,9 @@ let
   # `user` and `logTarget` are the two settings that depend on what is running
   # the server. A prison has no `knot` account to drop to -- the container is
   # already unprivileged -- and no syslog to write to.
-  baseSettings = { user, logTarget }: lib.recursiveUpdate
-    {
+  baseSettings =
+    { user, logTarget }:
+    lib.recursiveUpdate {
       server = {
         rundir = "/run/knot";
 
@@ -155,9 +108,16 @@ let
         # Derives transfer/notify ACLs from the configured remotes, so a peer
         # listed once does not also need a hand-written acl block.
         automatic-acl = true;
-      } // lib.optionalAttrs (user != null) { inherit user; };
+      }
+      // lib.optionalAttrs (user != null) { inherit user; };
 
-      log = [{ target = logTarget; server = cfg.logLevel; zone = cfg.logLevel; }];
+      log = [
+        {
+          target = logTarget;
+          server = cfg.logLevel;
+          zone = cfg.logLevel;
+        }
+      ];
 
       database = {
         storage = "/var/lib/knot";
@@ -169,30 +129,36 @@ let
       remote = remoteEntries;
       acl = ddnsAcls;
       policy = [ policyEntry ];
-    }
-    cfg.extraSettings;
+    } cfg.extraSettings;
 
   # Zones, storage and the complete configuration in one step. `configFile` is
   # the output of a derivation that ran `knotc conf-check` first, so the file
   # Knot reads cannot exist unless the configuration validated.
-  mkSettings = { keyFiles, user ? "knot:knot", logTarget ? "syslog" }: knotZones.mkZones {
-    name = "${cfg.containerName}-zones";
-    zones = lib.mapAttrs (_: z: { inherit (z) zone text primary dnssec; }) cfg.zones;
-    template = templateExtras;
-    settings = baseSettings { inherit user logTarget; };
-    inherit keyFiles;
-  };
+  mkSettings =
+    {
+      keyFiles,
+      user ? "knot:knot",
+      logTarget ? "syslog",
+    }:
+    knotZones.mkZones {
+      name = "${cfg.containerName}-zones";
+      zones = lib.mapAttrs (_: z: {
+        inherit (z)
+          zone
+          text
+          primary
+          dnssec
+          ;
+      }) cfg.zones;
+      template = templateExtras;
+      settings = baseSettings { inherit user logTarget; };
+      inherit keyFiles;
+    };
 
-  # The half of validation that cannot happen at build time.
-  #
-  # The build checks everything that does not depend on a secret: placeholder
-  # `key:` sections stand in, and conf-check verifies the whole structure.
-  # What it cannot see is whether the real key files exist, are readable by
-  # knot, are not world-readable, and parse -- because none of that may be in
-  # the store. So it is checked here instead, before knotd starts, with the
-  # real files in place. A broken or unreadable secret fails the unit with a
-  # named cause rather than a knotd startup error.
-  mkPreflight = configFile: pkgs.writeShellScript "knot-tsig-preflight" ''
+  # Check only runtime metadata that a derivation cannot know. The generated
+  # configuration was already checked with placeholder keys during the build;
+  # this process deliberately never opens or parses the real secret.
+  mkPreflight = pkgs.writeShellScript "knot-tsig-preflight" ''
     set -eu
     fail() { echo "knot-service: $*" >&2; exit 1; }
 
@@ -209,293 +175,18 @@ let
 
       perm=$(${pkgs.coreutils}/bin/stat -Lc '%a' "$f")
       if [ $(( 8#$perm & 8#004 )) -ne 0 ]; then
-        fail "TSIG key file $f is world-readable (mode $perm). Use 0640 root:knot, or 0400 owned by knot."
+        fail "TSIG key file $f is world-readable (mode $perm). Remove world access and grant read access only to knotd."
       fi
 
-      [ -r "$f" ] || fail "TSIG key file $f is not readable by the knot user (mode $perm). Signing and transfers would fail at the first use."
     done
-
-    # Now the real thing: the same config the build checked, but with the
-    # actual key files resolved through their include: directives.
-    exec ${cfg.package}/bin/knotc --config=${configFile} conf-check
   '';
 
 in
 {
-  options.services.knotService = {
-
-    backend = mkOption {
-      type = types.enum [ "prison" "nspawn" ];
-      default = "prison";
-      description = ''
-        Which container runs Knot. `prison` is a default-deny podman container
-        with no shell, no coreutils and no init of its own; `nspawn` is a full
-        NixOS container.
-      '';
-    };
-
-    stateDir = mkOption {
-      type = types.str;
-      default = "/var/lib/${cfg.containerName}/knot";
-      defaultText = "/var/lib/\${containerName}/knot";
-      description = ''
-        Host directory holding Knot's journal, timers and KASP database --
-        which is where the DNSSEC private keys live, so it must be backed up
-        and must survive a redeploy. `prison` backend only.
-      '';
-    };
-    enable = mkEnableOption "a locked-down NixOS container running Knot DNS";
-
-    containerName = mkOption {
-      type = types.str;
-      default = "knot";
-      description = "Name of the NixOS container.";
-    };
-
-    role = mkOption {
-      type = types.enum [ "primary" "secondary" ];
-      default = "primary";
-      description = ''
-        Whether this server is authoritative by file (primary, signs its zones)
-        or receives them by transfer (secondary). A secondary loads no zone
-        files and does not sign -- signatures come with the transfer.
-      '';
-    };
-
-    package = mkOption {
-      type = types.package;
-      default = pkgs.knot-dns;
-      defaultText = lib.literalExpression "pkgs.knot-dns";
-      description = "Knot DNS package to run.";
-    };
-
-    stateVersion = mkOption {
-      type = types.str;
-      example = "25.11";
-      description = "`system.stateVersion` for the container.";
-    };
-
-    hostAddress = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      example = "10.100.0.1";
-      description = "IPv4 address of the host end of the container's veth pair.";
-    };
-
-    localAddress = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      example = "10.100.0.2";
-      description = "IPv4 address of the container.";
-    };
-
-    hostAddress6 = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      example = "fc00::1";
-      description = "IPv6 address of the host end of the container's veth pair.";
-    };
-
-    localAddress6 = mkOption {
-      type = types.nullOr types.str;
-      default = null;
-      example = "fc00::2";
-      description = "IPv6 address of the container.";
-    };
-
-    listen = mkOption {
-      type = types.listOf types.str;
-      default = [ "0.0.0.0@53" "::@53" ];
-      description = ''
-        Addresses Knot binds inside the container. The container has its own
-        network namespace, so binding all addresses here exposes only the
-        container's own interfaces.
-      '';
-    };
-
-    zones = mkOption {
-      type = types.attrsOf zoneSpecType;
-      default = { };
-      description = "Zones this server is authoritative for.";
-    };
-
-    remotes = mkOption {
-      type = types.attrsOf remoteType;
-      default = { };
-      description = ''
-        All peers, primaries and secondaries alike. `primaries` and
-        `secondaries` select from these by name.
-      '';
-    };
-
-    primaries = mkOption {
-      type = types.attrsOf remoteType;
-      default = { };
-      description = "Peers this server transfers zones *from*. Meaningful when role is \"secondary\".";
-    };
-
-    secondaries = mkOption {
-      type = types.attrsOf remoteType;
-      default = { };
-      description = "Peers this server notifies and allows transfers to.";
-    };
-
-    tsigKeyFiles = mkOption {
-      # types.str, deliberately not types.path.
-      #
-      # types.path accepts a bare path literal, and nixpkgs' own
-      # services.knot builds its config with `"include: ${file}"` -- which,
-      # for a path *value*, copies the file into /nix/store with mode 0444.
-      # The option that exists to keep TSIG secrets out of the store will
-      # cheerfully put one there if you forget the quotes. A string cannot be
-      # copied, and the assertion below rejects a store path outright.
-      type = types.listOf types.str;
-      default = [ ];
-      example = [ "/var/lib/secrets/knot-tsig.conf" ];
-      description = ''
-        Files Knot includes at runtime, holding `key:` sections with their
-        secrets. Give locations as strings, and deploy the files by some means
-        Nix never sees -- agenix, sops-nix, or plain scp.
-
-        A TSIG secret in the Nix store is a zone-transfer and dynamic-update
-        credential readable by every user on the machine, so a store path here
-        is an error rather than a warning.
-      '';
-    };
-
-    dynamicUpdate = mkOption {
-      default = { };
-      description = ''
-        RFC 2136 dynamic update permissions, keyed by a name used to build the
-        ACL id. Each entry must name a TSIG key: an update ACL without one
-        authorises by address alone, which is forgeable over UDP.
-      '';
-      type = types.attrsOf (types.submodule {
-        options = {
-          key = mkOption {
-            type = types.str;
-            description = "TSIG key identifier authorising the update. Its secret belongs in `tsigKeyFiles`.";
-          };
-          allowedTypes = mkOption {
-            type = types.listOf types.str;
-            default = [ "A" "AAAA" "TXT" ];
-            example = [ "TXT" ];
-            description = ''
-              Record types this key may change. The default covers host records
-              and ACME challenges. Narrow it to [ "TXT" ] for a key that only
-              answers dns-01, so a leaked ACME credential cannot repoint an A
-              record. An empty list permits every type, including NS and DNSKEY.
-            '';
-          };
-          allowedOwner = mkOption {
-            type = types.nullOr types.str;
-            default = null;
-            example = "_acme-challenge.example.com.";
-            description = "Restrict updates to this exact owner name.";
-          };
-        };
-      });
-    };
-
-    dnssec = {
-      algorithm = mkOption {
-        type = types.enum [ "ecdsap256sha256" "ecdsap384sha384" "ed25519" "rsasha256" ];
-        default = "ecdsap256sha256";
-        description = ''
-          Signing algorithm. ECDSA P-256 is the interoperable default: smaller
-          signatures than RSA and universally supported, which ed25519 still
-          is not.
-        '';
-      };
-      nsec3 = mkOption {
-        type = types.bool;
-        default = false;
-        description = ''
-          Use NSEC3 rather than NSEC. NSEC3 only frustrates casual zone
-          enumeration -- it does not prevent it -- and costs every negative
-          answer a hash. Enable it if enumeration matters to you; iterations
-          are pinned to 0 per RFC 9276 either way.
-        '';
-      };
-      singleType = mkOption {
-        type = types.bool;
-        default = false;
-        description = ''
-          Single-type signing: one key acting as both KSK and ZSK. Simpler,
-          at the cost of needing a DS update for every rollover.
-        '';
-      };
-      kskLifetime = mkOption {
-        type = types.ints.unsigned;
-        default = 0;
-        description = ''
-          KSK lifetime in seconds. 0 means no automatic rollover, which is the
-          safe default: a KSK roll needs a matching DS update at the parent,
-          and Knot cannot do that for you unless you configure a submission.
-        '';
-      };
-      zskLifetime = mkOption {
-        type = types.ints.unsigned;
-        default = 2592000;
-        description = "ZSK lifetime in seconds. Rolls automatically; no parent involvement needed.";
-      };
-      propagationDelay = mkOption {
-        type = types.ints.unsigned;
-        default = 3600;
-        description = ''
-          Time to assume a zone change needs to reach every secondary before
-          the next rollover step. Too low and a rollover can outrun the
-          transfers, leaving a resolver holding signatures whose key it cannot
-          see. Should exceed your slowest secondary's refresh.
-        '';
-      };
-      signatureLifetime = mkOption {
-        type = types.ints.unsigned;
-        default = 1209600;
-        description = "RRSIG validity in seconds (default 14 days).";
-      };
-      signatureRefresh = mkOption {
-        type = types.ints.unsigned;
-        default = 604800;
-        description = ''
-          Re-sign this long before expiry (default 7 days). The gap between
-          this and signatureLifetime is how long the server can be down before
-          signatures start expiring and the zone goes dark for validating
-          resolvers.
-        '';
-      };
-    };
-
-    enableDoT = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Open TCP 853 for DNS over TLS.";
-    };
-
-    enableQuic = mkOption {
-      type = types.bool;
-      default = false;
-      description = "Open UDP 853 for DNS over QUIC.";
-    };
-
-    logLevel = mkOption {
-      type = types.enum [ "critical" "error" "warning" "notice" "info" "debug" ];
-      default = "notice";
-      description = "Knot log verbosity for server and zone events.";
-    };
-
-    extraAcls = mkOption {
-      type = types.listOf types.str;
-      default = [ ];
-      description = "Additional ACL ids to attach to the default template.";
-    };
-
-    extraSettings = mkOption {
-      type = types.attrsOf types.anything;
-      default = { };
-      description = "Merged into the generated Knot settings, for anything not modelled here.";
-    };
+  options.services.knotService = import ./knot-options.nix {
+    inherit lib pkgs cfg;
   };
+
   config = mkIf cfg.enable {
     assertions = [
       {
@@ -535,8 +226,9 @@ in
         '';
       }
       {
-        assertion = builtins.all (r: r.key != null || cfg.tsigKeyFiles != [ ])
-          (builtins.attrValues cfg.secondaries);
+        assertion = builtins.all (r: r.key != null || cfg.tsigKeyFiles != [ ]) (
+          builtins.attrValues cfg.secondaries
+        );
         message = ''
           services.knotService: a secondary has no TSIG key.
 

@@ -148,17 +148,22 @@ Split in two, because a secret must never be in the store and therefore can neve
 
 At build time, everything that does not depend on a secret. Zones go through `kzonecheck`; the configuration goes through `knotc conf-check` with placeholder `key:` sections standing in for the real ones. `services.knot.settingsFile` is the output of that derivation, so the file Knot reads cannot exist unless the check passed, and nothing has to opt in.
 
-At start time, the part that needs the real files. Before `knotd` runs, an `ExecStartPre` executing as the `knot` user under the same hardening verifies each key file exists, is a regular file, does not resolve into `/nix/store`, is not world-readable, and is readable by `knot` — then runs `knotc conf-check` again on the same config, this time with the `include:` directives resolving to the real secrets.
+At start time, an `ExecStartPre` verifies only secret-file metadata: each key
+file must exist, be a regular file, remain outside `/nix/store`, and not be
+world-readable. It deliberately does not open or parse the secret. The
+generated configuration was already checked with placeholder keys during the
+build; `knotd` is the only process that reads the real material.
 
 ```
-knot-service: TSIG key file /var/lib/secrets/knot-tsig.conf is world-readable (mode 644). Use 0640 root:knot, or 0400 owned by knot.
+knot-service: TSIG key file /var/lib/secrets/knot-tsig.conf is world-readable (mode 644). Remove world access and grant read access only to knotd.
 ```
 
 ```
 knot-service: TSIG key file /var/lib/secrets/knot-tsig.conf does not exist. It is deployed outside Nix, so nothing in the build could have caught this.
 ```
 
-A malformed or unreadable secret therefore fails the unit with a named cause, rather than as a `knotd` startup error or a transfer that silently never authenticates.
+An absent, misplaced, or world-readable secret fails with a named cause.
+Malformed or unreadable key material is rejected by `knotd` itself.
 
 ## Lockdown
 

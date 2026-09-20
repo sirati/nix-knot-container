@@ -2,7 +2,13 @@
 #
 # Everything domain-specific lives in knot.nix; this is only the container.
 
-{ config, lib, pkgs, knotLib, ... }:
+{
+  config,
+  lib,
+  pkgs,
+  knotLib,
+  ...
+}:
 
 let
   cfg = config.services.knotService;
@@ -11,7 +17,7 @@ let
   # nspawn bind-mounts each key file at the path it has on the host, so the
   # config can include it by that same path.
   built = knotLib.mkSettings { keyFiles = cfg.tsigKeyFiles; };
-  tsigPreflight = knotLib.mkPreflight built.configFile;
+  tsigPreflight = knotLib.mkPreflight;
 
   # The NixOS configuration running *inside* the container.
   containerConfig = { ... }: {
@@ -84,14 +90,22 @@ let
       ProtectProc = "invisible";
       ProcSubset = "pid";
       ProtectSystem = "strict";
-      RestrictAddressFamilies = [ "AF_INET" "AF_INET6" "AF_UNIX" ];
+      RestrictAddressFamilies = [
+        "AF_INET"
+        "AF_INET6"
+        "AF_UNIX"
+      ];
       RestrictNamespaces = true;
       RestrictRealtime = true;
       RestrictSUIDSGID = true;
       LockPersonality = true;
       MemoryDenyWriteExecute = true;
       SystemCallArchitectures = "native";
-      SystemCallFilter = [ "@system-service" "~@privileged" "~@resources" ];
+      SystemCallFilter = [
+        "@system-service"
+        "~@privileged"
+        "~@resources"
+      ];
       UMask = "0077";
       # Signing keys and the journal. Everything else stays read-only.
       StateDirectory = "knot";
@@ -107,16 +121,24 @@ in
       # Its own netns: the firewall below is then the container's whole
       # exposure, not a filter layered over the host's interfaces.
       privateNetwork = true;
-      inherit (cfg) hostAddress localAddress hostAddress6 localAddress6;
+      inherit (cfg)
+        hostAddress
+        localAddress
+        hostAddress6
+        localAddress6
+        ;
 
       # TSIG secrets are bind-mounted rather than copied, so they never enter
       # the store or a container image.
-      bindMounts = lib.listToAttrs (map
-        (p: lib.nameValuePair (toString p) {
-          hostPath = toString p;
-          isReadOnly = true;
-        })
-        cfg.tsigKeyFiles);
+      bindMounts = lib.listToAttrs (
+        map (
+          p:
+          lib.nameValuePair (toString p) {
+            hostPath = toString p;
+            isReadOnly = true;
+          }
+        ) cfg.tsigKeyFiles
+      );
 
       config = containerConfig;
     };
