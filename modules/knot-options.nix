@@ -198,6 +198,15 @@ in
             example = "_acme-challenge.example.com.";
             description = "Restrict updates to this exact owner name.";
           };
+          allowedOwnerMatch = mkOption {
+            type = types.enum [ "equal" "sub" ];
+            default = "equal";
+            description = ''
+              Match only `allowedOwner`, or every owner below it. The `sub`
+              mode is suitable for a delegated application domain whose key
+              must never update sibling names.
+            '';
+          };
         };
       }
     );
