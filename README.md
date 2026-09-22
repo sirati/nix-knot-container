@@ -220,7 +220,9 @@ Dynamic update:
 
 - Every update ACL is bound to a TSIG key; there is no address-only path.
 - `allowedTypes` defaults to `[ "A" "AAAA" "TXT" ]` and narrows further, so an ACME key restricted to `TXT` at one owner cannot repoint an A record.
-- `allowedOwner` pins updates to a single exact name.
+- `allowedOwner` pins updates to a name. Set `allowedOwnerMatch = "sub"` to
+  permit only names below that owner, for example an application's dedicated
+  subdomain.
 
 Surface removed:
 

@@ -49,7 +49,7 @@ let
     }
     // lib.optionalAttrs (d.allowedOwner != null) {
       update-owner = "name";
-      update-owner-match = "equal";
+      update-owner-match = d.allowedOwnerMatch;
       update-owner-name = [ d.allowedOwner ];
     }
   ) cfg.dynamicUpdate;
