@@ -5,6 +5,28 @@ scope: with scope; {
   primary-config-is-valid = configOf primaryHost "knot";
   secondary-config-is-valid = configOf secondaryHost "knot-secondary";
 
+  nspawn-exposes-actual-config =
+    assertEq "nspawn-exposes-actual-config" (toString (configOf primaryHost "knot"))
+      primaryHost.config.services.knotService.generatedConfigFile;
+
+  nspawn-exposes-zone-storage =
+    let
+      paths = primaryHost.config.services.knotService.generatedZoneStorage;
+    in
+    pkgs.runCommand "check-nspawn-exposes-zone-storage" { } ''
+      test ${toString (builtins.length paths)} -eq 2
+      grep -F 'storage: "${builtins.head paths}"' ${configOf primaryHost "knot"}
+      test "$(readlink ${builtins.head paths}/example.com.zone)" = "${builtins.elemAt paths 1}/example.com.zone"
+      echo ok > $out
+    '';
+
+  disabled-exposes-no-config =
+    let
+      cfg = (evalHost { }).config.services.knotService;
+    in
+    assertEq "disabled-exposes-no-config" { file = null; zones = [ ]; }
+      { file = cfg.generatedConfigFile; zones = cfg.generatedZoneStorage; };
+
   # DNSSEC has no off switch, so a primary always comes out signing.
   primary-signs = grepConfig "primary-signs" "^ +dnssec-signing: on$" (configOf primaryHost "knot");
 

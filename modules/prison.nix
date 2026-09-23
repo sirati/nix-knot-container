@@ -20,17 +20,8 @@ let
   # Where each key file is readable from *inside* the container. It is bound
   # there one file at a time rather than by its directory, so the service is
   # given its own secret and not whatever else the host keeps alongside it.
-  secretPath = f: "/secrets/${baseNameOf f}";
-
-  # The configuration knotd reads, with include: pointing at the container
-  # paths...
-  built = knotLib.mkSettings {
-    keyFiles = map secretPath cfg.tsigKeyFiles;
-    # The container is already unprivileged and has no `knot` account to drop
-    # to, and nothing here reads syslog -- podman collects stdout.
-    user = null;
-    logTarget = "stdout";
-  };
+  inherit (knotLib) built;
+  secretPath = knotLib.prisonSecretPath;
 
   tsigPreflight = knotLib.mkPreflight;
 
