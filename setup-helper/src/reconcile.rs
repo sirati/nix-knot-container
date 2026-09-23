@@ -75,17 +75,26 @@ fn canonical(input: &Inputs, file: &Path) -> Result<String, String> {
 
 fn parse(text: &str) -> Result<BTreeSet<Record>, String> {
     text.lines()
-        .filter(|line| !line.is_empty() && !line.starts_with(';'))
+        .filter(|line| !line.trim().is_empty() && !line.trim_start().starts_with(';'))
         .map(|line| {
-            let fields: Vec<_> = line.splitn(4, '\t').map(str::trim).collect();
-            if fields.len() != 4 || fields.iter().any(|field| field.is_empty()) {
+            let mut tail = line.trim();
+            let mut next = || {
+                let end = tail.find(char::is_whitespace)?;
+                let (field, remaining) = tail.split_at(end);
+                tail = remaining.trim_start();
+                Some(field)
+            };
+            let owner = next().ok_or_else(|| format!("invalid canonical zone record: {line}"))?;
+            let ttl = next().ok_or_else(|| format!("invalid canonical zone record: {line}"))?;
+            let kind = next().ok_or_else(|| format!("invalid canonical zone record: {line}"))?;
+            if tail.is_empty() {
                 return Err(format!("invalid canonical zone record: {line}"));
             }
             Ok(Record {
-                owner: fields[0].into(),
-                ttl: fields[1].into(),
-                kind: fields[2].into(),
-                data: fields[3].into(),
+                owner: owner.into(),
+                ttl: ttl.into(),
+                kind: kind.into(),
+                data: tail.into(),
             })
         })
         .collect()
@@ -167,7 +176,16 @@ mod tests {
 
     #[test]
     fn parses_canonical_records_and_preserves_quoted_data() {
-        let records = parse(";; header\nexample.com.\t3600\tTXT\t\"hello world\"\n").unwrap();
-        assert_eq!(records.iter().next().unwrap().data, "\"hello world\"");
+        let records = parse(
+            ";; header\nexample.com.\t3600\tTXT\t\"hello world\"\n\
+             _verify.example.test.  86400  TXT     \"sample-token\"\n",
+        )
+        .unwrap();
+        assert!(records
+            .iter()
+            .any(|record| record.data == "\"hello world\""));
+        assert!(records
+            .iter()
+            .any(|record| record.data == "\"sample-token\""));
     }
 }
