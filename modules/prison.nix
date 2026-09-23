@@ -130,7 +130,10 @@ let
     keyFiles = map secretPath cfg.tsigKeyFiles;
     user = null;
     logTarget = "stdout";
-    settingsOverride.server.listen = [ "127.0.0.1@1053" ];
+    settingsOverride.server = {
+      listen = [ "127.0.0.1@1053" ];
+      rundir = "/run/knot";
+    };
     templateOverride.notify = [ ];
   };
 
@@ -138,7 +141,10 @@ let
     keyFiles = map secretPath cfg.tsigKeyFiles;
     user = null;
     logTarget = "stdout";
-    settingsOverride.server.listen = [ "127.0.0.1@1053" ];
+    settingsOverride.server = {
+      listen = [ "127.0.0.1@1053" ];
+      rundir = "/run/knot";
+    };
     templateOverride = {
       notify = [ ];
       zonefile-load = "none";
@@ -150,7 +156,10 @@ let
     user = null;
     logTarget = "stdout";
     zonesOverride = { ${name} = zone; };
-    settingsOverride.server.listen = [ "127.0.0.1@1053" ];
+    settingsOverride.server = {
+      listen = [ "127.0.0.1@1053" ];
+      rundir = "/run/knot";
+    };
     templateOverride.notify = [ ];
   }) cfg.zones;
 

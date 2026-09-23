@@ -165,6 +165,9 @@ let
         keyFiles = map prisonSecretPath cfg.tsigKeyFiles;
         user = null;
         logTarget = "stdout";
+        settingsOverride = lib.optionalAttrs cfg.freshInit.enable {
+          server.rundir = "/run/knot";
+        };
         # Fresh setup seeds the journal from the zone files. Thereafter the
         # journal is authoritative; a separate pre-start reconciliation applies
         # only declarative record changes, preserving DDNS records.
