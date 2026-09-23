@@ -176,7 +176,7 @@ scope: with scope; {
       ${pkgs.knot-dns}/bin/keymgr \
       ${pkgs.knot-dns}/bin/kzonecheck \
       "$TMPDIR/knot.conf" "$TMPDIR/state" split \
-      example.com.=${builtins.head freshHost.config.services.knotService.generatedZoneFiles}
+      example.com.=${builtins.head freshHost.config.services.knotService.generatedZoneFiles}=$TMPDIR/knot.conf
     test -s "$TMPDIR/state/keys/data.mdb"
     test -s "$TMPDIR/state/journal/data.mdb"
     test -s "$TMPDIR/state/timers/data.mdb"
@@ -186,7 +186,7 @@ scope: with scope; {
       ${pkgs.knot-dns}/bin/keymgr \
       ${pkgs.knot-dns}/bin/kzonecheck \
       "$TMPDIR/knot.conf" "$TMPDIR/state" split \
-      example.com.=${builtins.head freshHost.config.services.knotService.generatedZoneFiles}; then
+      example.com.=${builtins.head freshHost.config.services.knotService.generatedZoneFiles}=$TMPDIR/knot.conf; then
       echo "fresh initialization accepted existing state" >&2
       exit 1
     fi

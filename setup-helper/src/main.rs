@@ -1,18 +1,20 @@
 #![forbid(unsafe_code)]
 
-use std::env;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
+mod input;
 mod reconcile;
+
+use input::{parse_args, require_empty_state};
 
 const START_TIMEOUT: Duration = Duration::from_secs(30);
 const SIGN_TIMEOUT: Duration = Duration::from_secs(120);
 const STOP_TIMEOUT: Duration = Duration::from_secs(15);
 
+#[derive(Clone)]
 struct Inputs {
     mode: Mode,
     knotd: PathBuf,
@@ -31,9 +33,11 @@ enum Mode {
     Reconcile,
 }
 
+#[derive(Clone)]
 struct Zone {
     name: String,
     file: PathBuf,
+    bootstrap_config: PathBuf,
 }
 
 fn main() {
@@ -47,7 +51,7 @@ fn run() -> Result<(), String> {
     let input = parse_args()?;
     match input.mode {
         Mode::Initialize => require_empty_state(&input.state)?,
-        Mode::Reconcile => reconcile::require_manifests(&input)?,
+        Mode::Reconcile => reconcile::bootstrap_missing(&input)?,
     }
     let mut daemon = Command::new(&input.knotd)
         .arg("--config")
@@ -67,80 +71,6 @@ fn run() -> Result<(), String> {
         Mode::Initialize => reconcile::write_initial_manifests(&input),
         Mode::Reconcile => Ok(()),
     }
-}
-
-fn parse_args() -> Result<Inputs, String> {
-    let mut args = env::args_os().skip(1);
-    let mut next = || {
-        args.next()
-            .ok_or_else(|| "missing setup argument".to_string())
-    };
-    let mode = match next()?.to_str() {
-        Some("initialize") => Mode::Initialize,
-        Some("reconcile") => Mode::Reconcile,
-        _ => return Err("mode must be initialize or reconcile".into()),
-    };
-    let knotd = PathBuf::from(next()?);
-    let knotc = PathBuf::from(next()?);
-    let keymgr = PathBuf::from(next()?);
-    let kzonecheck = PathBuf::from(next()?);
-    let config = PathBuf::from(next()?);
-    let state = PathBuf::from(next()?);
-    let single_type = match next()?.to_str() {
-        Some("single") => true,
-        Some("split") => false,
-        _ => return Err("signing mode must be single or split".into()),
-    };
-    let zones = args
-        .map(|arg| {
-            let value = arg
-                .into_string()
-                .map_err(|_| "zone argument is not UTF-8".to_string())?;
-            let (name, file) = value
-                .split_once('=')
-                .ok_or("zone argument must be name=path")?;
-            let file = PathBuf::from(file);
-            if !name.ends_with('.') || !file.is_absolute() || name.contains('/') {
-                return Err("zone must be a fully qualified name with an absolute file".into());
-            }
-            Ok(Zone {
-                name: name.to_string(),
-                file,
-            })
-        })
-        .collect::<Result<Vec<_>, String>>()?;
-    if zones.is_empty() {
-        return Err("at least one primary zone is required".into());
-    }
-    if [&knotd, &knotc, &keymgr, &kzonecheck, &config, &state]
-        .iter()
-        .any(|path| !path.is_absolute())
-    {
-        return Err("all binary, config, and state paths must be absolute".into());
-    }
-    Ok(Inputs {
-        mode,
-        knotd,
-        knotc,
-        keymgr,
-        kzonecheck,
-        config,
-        state,
-        single_type,
-        zones,
-    })
-}
-
-fn require_empty_state(state: &Path) -> Result<(), String> {
-    let mut entries = fs::read_dir(state)
-        .map_err(|error| format!("cannot inspect {}: {error}", state.display()))?;
-    if entries.next().is_some() {
-        return Err(format!(
-            "{} is not empty; refusing fresh initialization",
-            state.display()
-        ));
-    }
-    Ok(())
 }
 
 fn initialize(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
@@ -278,6 +208,7 @@ fn verify_state(input: &Inputs) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::{env, fs};
 
     #[test]
     fn rejects_existing_state_before_starting_daemon() {

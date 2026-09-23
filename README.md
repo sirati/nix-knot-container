@@ -32,6 +32,9 @@ loads the journal on restart, retaining records added through RFC 2136. Back
 up the whole state directory, including `declarative-zones`, and restore it
 before starting the regular service on a replacement host. A service manager
 that gates the regular daemon for setup or recovery must gate prepare too.
+When a new zone is declared later, prepare initializes only that zone and
+retains the existing zones' keys and journal. A missing manifest for a zone
+that already has DNSSEC keys is treated as damaged state, not a new zone.
 
 ## Input
 

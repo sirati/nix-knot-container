@@ -145,8 +145,17 @@ let
     };
   };
 
+  bootstrapBuilt = lib.mapAttrs (name: zone: knotLib.mkSettings {
+    keyFiles = map secretPath cfg.tsigKeyFiles;
+    user = null;
+    logTarget = "stdout";
+    zonesOverride = { ${name} = zone; };
+    settingsOverride.server.listen = [ "127.0.0.1@1053" ];
+    templateOverride.notify = [ ];
+  }) cfg.zones;
+
   zoneArgs = builtConfig: lib.mapAttrsToList
-    (name: dir: "${lib.removeSuffix "." name}.=${dir}/${lib.removeSuffix "." name}.zone")
+    (name: dir: "${lib.removeSuffix "." name}.=${dir}/${lib.removeSuffix "." name}.zone=${bootstrapBuilt.${name}.configFile}")
     builtConfig.files;
 
   initArgs = mode: builtConfig: [
@@ -173,7 +182,8 @@ let
     name = "initialize";
     exec = initArgs "initialize" setupBuilt;
     uid = 1000;
-    packages = [ cfg.package setupBuilt.storage ];
+    packages = [ cfg.package setupBuilt.storage ]
+      ++ lib.concatMap (x: [ x.storage x.configFile ]) (builtins.attrValues bootstrapBuilt);
     state = [ { path = "/run/knot"; size = "8M"; } ];
     persist = stateMounts;
     config."knot.conf" = setupBuilt.configFile;
@@ -183,7 +193,8 @@ let
     name = "prepare";
     exec = initArgs "reconcile" prepareBuilt;
     uid = 1000;
-    packages = [ cfg.package prepareBuilt.storage ];
+    packages = [ cfg.package prepareBuilt.storage ]
+      ++ lib.concatMap (x: [ x.storage x.configFile ]) (builtins.attrValues bootstrapBuilt);
     state = [ { path = "/run/knot"; size = "8M"; } ];
     persist = stateMounts;
     config."knot.conf" = prepareBuilt.configFile;
