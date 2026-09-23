@@ -1,4 +1,20 @@
 scope: with scope; {
+  bootstrap-config-is-zone-specific =
+    let
+      expanded = expandedHost.config.services.prisons.knot;
+      preparer = lib.findFirst (service: service.name == "prepare") null expanded.svcList;
+      zoneArgs = lib.filter (arg: lib.hasPrefix "example.com.=" arg || lib.hasPrefix "other.test.=" arg) preparer.argv;
+      configs = map (arg: builtins.elemAt (lib.splitString "=" arg) 2) zoneArgs;
+    in
+    pkgs.runCommand "check-knot-zone-bootstrap-configs" { } ''
+      test ${toString (builtins.length configs)} -eq 2
+      grep -q '^  - domain: example.com.' ${builtins.elemAt configs 0}
+      ! grep -q '^  - domain: other.test.' ${builtins.elemAt configs 0}
+      grep -q '^  - domain: other.test.' ${builtins.elemAt configs 1}
+      ! grep -q '^  - domain: example.com.' ${builtins.elemAt configs 1}
+      echo ok > "$out"
+    '';
+
   preserves-ddns-and-applies-static-change = pkgs.runCommand "check-knot-journal-reconciliation" {
     nativeBuildInputs = [ pkgs.coreutils pkgs.gnused pkgs.gnugrep ];
   } ''
@@ -24,7 +40,7 @@ scope: with scope; {
     knotc=${pkgs.knot-dns}/bin/knotc
     keymgr=${pkgs.knot-dns}/bin/keymgr
     kzonecheck=${pkgs.knot-dns}/bin/kzonecheck
-    zone=example.com.=$TMPDIR/zones/example.com.zone
+    zone=example.com.=$TMPDIR/zones/example.com.zone=$TMPDIR/setup.conf
     "$helper" initialize "$knotd" "$knotc" "$keymgr" "$kzonecheck" \
       "$TMPDIR/setup.conf" "$TMPDIR/state" split "$zone"
 
@@ -93,6 +109,47 @@ scope: with scope; {
       exit 1
     fi
     "$knotc" --config "$TMPDIR/normal.conf" stop
+    wait "$daemon"
+
+    existing_keys=$("$keymgr" --config "$TMPDIR/setup.conf" example.com. list)
+    mv "$TMPDIR/state/declarative-zones/example.com.zone" \
+      "$TMPDIR/state/declarative-zones/example.com.zone.saved"
+    if "$helper" reconcile "$knotd" "$knotc" "$keymgr" "$kzonecheck" \
+      "$TMPDIR/prepare.conf" "$TMPDIR/state" split "$zone"; then
+      echo "existing signed zone bootstrapped without its manifest" >&2
+      exit 1
+    fi
+    mv "$TMPDIR/state/declarative-zones/example.com.zone.saved" \
+      "$TMPDIR/state/declarative-zones/example.com.zone"
+    cat > "$TMPDIR/zones/other.test.zone" <<EOF
+    \$TTL 3600
+    other.test. IN SOA ns.other.test. hostmaster.other.test. (1 3600 600 86400 60)
+    other.test. IN NS ns.other.test.
+    ns.other.test. IN A 203.0.113.10
+    EOF
+    sed 's/example.com./other.test./g' "$TMPDIR/setup.conf" > "$TMPDIR/other-bootstrap.conf"
+    cp "$TMPDIR/prepare.conf" "$TMPDIR/expanded-prepare.conf"
+    cp "$TMPDIR/normal.conf" "$TMPDIR/expanded-normal.conf"
+    printf '  - domain: other.test.\n    template: default\n' \
+      >> "$TMPDIR/expanded-prepare.conf"
+    printf '  - domain: other.test.\n    template: default\n' \
+      >> "$TMPDIR/expanded-normal.conf"
+    "$helper" reconcile "$knotd" "$knotc" "$keymgr" "$kzonecheck" \
+      "$TMPDIR/expanded-prepare.conf" "$TMPDIR/state" split \
+      "$zone" "other.test.=$TMPDIR/zones/other.test.zone=$TMPDIR/other-bootstrap.conf"
+    test -s "$TMPDIR/state/declarative-zones/other.test.zone"
+    test "$("$keymgr" --config "$TMPDIR/expanded-normal.conf" example.com. list)" = "$existing_keys"
+    "$knotd" --config "$TMPDIR/expanded-normal.conf" &
+    daemon=$!
+    for i in $(seq 1 100); do
+      "$knotc" --config "$TMPDIR/expanded-normal.conf" status >/dev/null 2>&1 && break
+      sleep 0.1
+    done
+    "$knotc" --config "$TMPDIR/expanded-normal.conf" zone-read example.com. dynamic.example.com. A \
+      | grep -F 192.0.2.44
+    "$knotc" --config "$TMPDIR/expanded-normal.conf" zone-read other.test. other.test. SOA \
+      | grep -F ns.other.test.
+    "$knotc" --config "$TMPDIR/expanded-normal.conf" stop
     wait "$daemon"
     trap - EXIT
     echo ok > "$out"

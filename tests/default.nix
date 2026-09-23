@@ -122,6 +122,26 @@ let
   freshInitializer = lib.findFirst (service: service.name == "initialize") null freshPrison.svcList;
   freshPreparer = lib.findFirst (service: service.name == "prepare") null freshPrison.svcList;
 
+  expandedHost = evalHost {
+    services.knotService = {
+      enable = true;
+      role = "primary";
+      freshInit.enable = true;
+      zones."example.com".text = ''
+        $TTL 3600
+        example.com. IN SOA ns.example.com. hostmaster.example.com. (1 3600 600 86400 60)
+        example.com. IN NS ns.example.com.
+        ns.example.com. IN A 203.0.113.2
+      '';
+      zones."other.test".text = ''
+        $TTL 3600
+        other.test. IN SOA ns.other.test. hostmaster.other.test. (1 3600 600 86400 60)
+        other.test. IN NS ns.other.test.
+        ns.other.test. IN A 203.0.113.10
+      '';
+    };
+  };
+
   prison = prisonHost.config.services.prisons.knot;
   knotd = builtins.head prison.svcList;
 
@@ -247,6 +267,7 @@ let
       freshPrison
       freshInitializer
       freshPreparer
+      expandedHost
       prison
       knotd
       secondaryHost

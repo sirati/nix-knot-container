@@ -1,8 +1,8 @@
-use super::{knotc, wait_for, Inputs, START_TIMEOUT};
+use super::{initialize, knotc, stop_daemon, verify_state, wait_for, Inputs, START_TIMEOUT};
 use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::process::{Child, Command, Stdio};
 
 #[derive(Clone, Eq, Ord, PartialEq, PartialOrd)]
 struct Record {
@@ -19,15 +19,40 @@ fn manifest_path(input: &Inputs, zone: &str) -> PathBuf {
         .join(format!("{zone}zone"))
 }
 
-pub(super) fn require_manifests(input: &Inputs) -> Result<(), String> {
+pub(super) fn bootstrap_missing(input: &Inputs) -> Result<(), String> {
     for zone in &input.zones {
         let path = manifest_path(input, &zone.name);
-        if !path.is_file() {
+        if path.is_file() {
+            continue;
+        }
+        let keys = Command::new(&input.keymgr)
+            .arg("--config")
+            .arg(&zone.bootstrap_config)
+            .arg(&zone.name)
+            .arg("list")
+            .output()
+            .map_err(|error| format!("inspect existing keys for {}: {error}", zone.name))?;
+        if keys.status.success() && !keys.stdout.is_empty() {
             return Err(format!(
-                "missing static-zone manifest {}; run fresh setup or restore state",
-                path.display()
+                "missing manifest for signed zone {}; restore its state before startup",
+                zone.name
             ));
         }
+        let mut isolated = input.clone();
+        isolated.config = zone.bootstrap_config.clone();
+        isolated.zones = vec![zone.clone()];
+        let mut daemon = Command::new(&isolated.knotd)
+            .arg("--config")
+            .arg(&isolated.config)
+            .stdin(Stdio::null())
+            .spawn()
+            .map_err(|error| format!("bootstrap {}: {error}", zone.name))?;
+        let outcome = initialize(&isolated, &mut daemon);
+        let stopped = stop_daemon(&isolated, &mut daemon);
+        outcome?;
+        stopped?;
+        verify_state(&isolated)?;
+        write_initial_manifests(&isolated)?;
     }
     Ok(())
 }

@@ -141,6 +141,7 @@ let
       logTarget ? "syslog",
       settingsOverride ? { },
       templateOverride ? { },
+      zonesOverride ? cfg.zones,
     }:
     knotZones.mkZones {
       name = "${cfg.containerName}-zones";
@@ -151,7 +152,7 @@ let
           primary
           dnssec
           ;
-      }) cfg.zones;
+      }) zonesOverride;
       template = lib.recursiveUpdate templateExtras templateOverride;
       settings = lib.recursiveUpdate (baseSettings { inherit user logTarget; }) settingsOverride;
       inherit keyFiles;
