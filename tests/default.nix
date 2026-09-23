@@ -287,4 +287,5 @@ in
 // (import ./reconcile-checks.nix scope)
 // lib.optionalAttrs (system == "x86_64-linux") {
   prison-setup-to-public-vm = import ./setup-vm.nix { inherit pkgs module; };
+  nspawn-public-ipv6-vm = import ./nspawn-network-vm.nix { inherit pkgs module; };
 }
