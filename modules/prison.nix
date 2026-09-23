@@ -114,18 +114,86 @@ let
       "knot.conf" = built.configFile;
     };
 
-    # knotd re-reads its configuration and zones on SIGHUP, so a change to the
-    # config directory is a reload rather than a restart.
-    reload = {
-      signal = "SIGHUP";
+    # Journal-backed primaries reconcile static zone changes in the prepare
+    # unit, so a changed generation must start that unit before knotd again.
+    reload = if cfg.freshInit.enable then null else { signal = "SIGHUP"; };
+  };
+
+  freshInitHelper = pkgs.rustPlatform.buildRustPackage {
+    pname = "knot-fresh-init";
+    version = "0.1.0";
+    src = ../setup-helper;
+    cargoLock.lockFile = ../setup-helper/Cargo.lock;
+  };
+
+  setupBuilt = knotLib.mkSettings {
+    keyFiles = map secretPath cfg.tsigKeyFiles;
+    user = null;
+    logTarget = "stdout";
+    settingsOverride.server.listen = [ "127.0.0.1@1053" ];
+    templateOverride.notify = [ ];
+  };
+
+  prepareBuilt = knotLib.mkSettings {
+    keyFiles = map secretPath cfg.tsigKeyFiles;
+    user = null;
+    logTarget = "stdout";
+    settingsOverride.server.listen = [ "127.0.0.1@1053" ];
+    templateOverride = {
+      notify = [ ];
+      zonefile-load = "none";
     };
+  };
+
+  zoneArgs = builtConfig: lib.mapAttrsToList
+    (name: dir: "${lib.removeSuffix "." name}.=${dir}/${lib.removeSuffix "." name}.zone")
+    builtConfig.files;
+
+  initArgs = mode: builtConfig: [
+    "${freshInitHelper}/bin/knot-fresh-init"
+    mode
+    "${cfg.package}/bin/knotd"
+    "${cfg.package}/bin/knotc"
+    "${cfg.package}/bin/keymgr"
+    "${cfg.package}/bin/kzonecheck"
+    "/config/knot.conf"
+    "/var/lib/knot"
+    (if cfg.dnssec.singleType then "single" else "split")
+  ] ++ zoneArgs builtConfig;
+
+  stateMounts = [ { host = cfg.stateDir; path = "/var/lib/knot"; } ]
+    ++ map (f: {
+      host = f;
+      path = secretPath f;
+      readOnly = true;
+      file = true;
+    }) cfg.tsigKeyFiles;
+
+  initialize = prison.mkPrisonService {
+    name = "initialize";
+    exec = initArgs "initialize" setupBuilt;
+    uid = 1000;
+    packages = [ cfg.package setupBuilt.storage ];
+    state = [ { path = "/run/knot"; size = "8M"; } ];
+    persist = stateMounts;
+    config."knot.conf" = setupBuilt.configFile;
+  };
+
+  prepare = prison.mkPrisonService {
+    name = "prepare";
+    exec = initArgs "reconcile" prepareBuilt;
+    uid = 1000;
+    packages = [ cfg.package prepareBuilt.storage ];
+    state = [ { path = "/run/knot"; size = "8M"; } ];
+    persist = stateMounts;
+    config."knot.conf" = prepareBuilt.configFile;
   };
 in
 {
   config = mkIf (cfg.enable && cfg.backend == "prison") {
     services.prisons.${cfg.containerName} = prison.mkPrison {
       name = cfg.containerName;
-      services = { inherit knotd; };
+      services = { inherit knotd; } // lib.optionalAttrs cfg.freshInit.enable { inherit initialize prepare; };
       listen = {
         tcp = tcpPorts;
         udp = udpPorts;
@@ -148,8 +216,38 @@ in
     # The half of validation that cannot happen at build time, run on the host
     # because that is where the secrets are. The prison unit starts the
     # containers, so this gates it.
-    systemd.services."${cfg.containerName}".serviceConfig.ExecStartPre = lib.mkBefore [
-      "${tsigPreflight}"
-    ];
+    systemd.services = {
+      "${cfg.containerName}".serviceConfig.ExecStartPre = lib.mkBefore [
+        "${tsigPreflight}"
+      ];
+    } // lib.optionalAttrs cfg.freshInit.enable {
+      "${cfg.containerName}-initialize" = {
+        wantedBy = lib.mkForce [ ];
+        serviceConfig = {
+          Type = lib.mkForce "oneshot";
+          Restart = lib.mkForce "no";
+        };
+      };
+      "${cfg.containerName}-prepare" = {
+        wantedBy = lib.mkForce [ ];
+        serviceConfig = {
+          Type = lib.mkForce "oneshot";
+          Restart = lib.mkForce "no";
+        };
+      };
+      "${cfg.containerName}-knotd" = {
+        requires = [ "${cfg.containerName}-prepare.service" ];
+        after = [ "${cfg.containerName}-prepare.service" ];
+      };
+      "${cfg.containerName}-setup" = {
+        description = "Initialize Knot state for ${cfg.containerName}";
+        requires = [ "${cfg.containerName}-initialize.service" ];
+        after = [ "${cfg.containerName}-initialize.service" ];
+        serviceConfig = {
+          Type = "oneshot";
+          ExecStart = "${pkgs.coreutils}/bin/true";
+        };
+      };
+    };
   };
 }

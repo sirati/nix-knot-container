@@ -104,6 +104,24 @@ let
     };
   };
 
+  freshHost = evalHost {
+    services.knotService = {
+      enable = true;
+      backend = "prison";
+      role = "primary";
+      freshInit.enable = true;
+      zones."example.com".text = ''
+        $TTL 3600
+        example.com. IN SOA ns1.example.com. hostmaster.example.com. (1 3600 600 86400 60)
+        example.com. IN NS ns1.example.com.
+        ns1.example.com. IN A 203.0.113.2
+      '';
+    };
+  };
+  freshPrison = freshHost.config.services.prisons.knot;
+  freshInitializer = lib.findFirst (service: service.name == "initialize") null freshPrison.svcList;
+  freshPreparer = lib.findFirst (service: service.name == "prepare") null freshPrison.svcList;
+
   prison = prisonHost.config.services.prisons.knot;
   knotd = builtins.head prison.svcList;
 
@@ -225,6 +243,10 @@ let
       evalHost
       primaryHost
       prisonHost
+      freshHost
+      freshPrison
+      freshInitializer
+      freshPreparer
       prison
       knotd
       secondaryHost
@@ -239,4 +261,6 @@ let
       ;
   };
 in
-(import ./core-checks.nix scope) // (import ./prison-checks.nix scope)
+(import ./core-checks.nix scope)
+// (import ./prison-checks.nix scope)
+// (import ./reconcile-checks.nix scope)

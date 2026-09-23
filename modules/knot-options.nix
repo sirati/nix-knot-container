@@ -40,6 +40,11 @@ in
   };
   enable = mkEnableOption "a locked-down NixOS container running Knot DNS";
 
+  freshInit.enable = mkEnableOption ''
+    a manual one-shot setup unit that initializes primary DNSSEC and journal
+    state using a loopback-only Knot daemon
+  '';
+
   containerName = mkOption {
     type = types.str;
     default = "knot";
