@@ -65,6 +65,12 @@ let
         allowedTypes = [ "TXT" ];
         allowedOwner = "_acme-challenge.example.com.";
       };
+      dynamicUpdate.relay = {
+        key = "relay-updater";
+        allowedTypes = [ "TXT" ];
+        allowedOwner = "noreply.example.com.";
+        allowedOwnerMatch = "sub";
+      };
 
       tsigKeyFiles = [ "/var/lib/secrets/knot-tsig.conf" ];
     };
