@@ -35,6 +35,9 @@ that gates the regular daemon for setup or recovery must gate prepare too.
 When a new zone is declared later, prepare initializes only that zone and
 retains the existing zones' keys and journal. A missing manifest for a zone
 that already has DNSSEC keys is treated as damaged state, not a new zone.
+For these units, Knot's PID and control socket live in the private `/run/knot`
+tmpfs even if an older configuration set `server.rundir` under persistent
+storage. The journal, timers, DNSSEC keys, and zone manifests remain persistent.
 
 ## Input
 

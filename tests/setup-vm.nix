@@ -10,6 +10,9 @@ pkgs.testers.runNixOSTest {
       containerName = "knot-test";
       stateDir = "/var/lib/knot-test-state";
       freshInit.enable = true;
+      # A caller may still carry the old persistent rundir override. Fresh
+      # setup must keep PID/control files ephemeral despite that setting.
+      extraSettings.server.rundir = "/var/lib/knot";
       zones."example.test".text = ''
         $TTL 300
         example.test. IN SOA ns.example.test. hostmaster.example.test. (1 3600 600 86400 60)
@@ -34,7 +37,7 @@ pkgs.testers.runNixOSTest {
     system.stateVersion = "26.05";
   };
   testScript = ''
-    machine.start()
+    machine.start(allow_reboot=True)
     machine.wait_for_unit("multi-user.target")
     machine.succeed("systemctl start knot-test.service")
     machine.succeed("systemctl start knot-test-setup.service")
@@ -47,7 +50,14 @@ pkgs.testers.runNixOSTest {
       "kdig +timeout=1 +retry=0 @127.0.0.1 example.test. DNSKEY +short | grep -q .",
       timeout=30,
     )
+    keys = machine.succeed("kdig @127.0.0.1 example.test. DNSKEY +short | sort")
+    machine.succeed("test -z \"$(find /var/lib/knot-test-state -maxdepth 1 -name '*.pid' -print -quit)\"")
     machine.succeed("test \"$(systemctl show -P Result knot-test-initialize.service)\" = success")
     machine.succeed("test \"$(systemctl show -P Result knot-test-prepare.service)\" = success")
+    machine.reboot()
+    machine.wait_for_unit("multi-user.target")
+    machine.succeed("systemctl start knot-test-knotd.service")
+    machine.wait_until_succeeds("kdig @127.0.0.1 example.test. DNSKEY +short | grep -q .", timeout=30)
+    assert machine.succeed("kdig @127.0.0.1 example.test. DNSKEY +short | sort") == keys
   '';
 }
