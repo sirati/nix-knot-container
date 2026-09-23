@@ -12,11 +12,15 @@ scope: with scope; {
   nspawn-exposes-zone-storage =
     let
       paths = primaryHost.config.services.knotService.generatedZoneStorage;
+      files = primaryHost.config.services.knotService.generatedZoneFiles;
     in
     pkgs.runCommand "check-nspawn-exposes-zone-storage" { } ''
       test ${toString (builtins.length paths)} -eq 2
       grep -F 'storage: "${builtins.head paths}"' ${configOf primaryHost "knot"}
       test "$(readlink ${builtins.head paths}/example.com.zone)" = "${builtins.elemAt paths 1}/example.com.zone"
+      test ${toString (builtins.length files)} -eq 1
+      test "${builtins.head files}" = "${builtins.elemAt paths 1}/example.com.zone"
+      test -f "${builtins.head files}"
       echo ok > $out
     '';
 
@@ -24,8 +28,8 @@ scope: with scope; {
     let
       cfg = (evalHost { }).config.services.knotService;
     in
-    assertEq "disabled-exposes-no-config" { file = null; zones = [ ]; }
-      { file = cfg.generatedConfigFile; zones = cfg.generatedZoneStorage; };
+    assertEq "disabled-exposes-no-config" { file = null; zones = [ ]; files = [ ]; }
+      { file = cfg.generatedConfigFile; zones = cfg.generatedZoneStorage; files = cfg.generatedZoneFiles; };
 
   # DNSSEC has no off switch, so a primary always comes out signing.
   primary-signs = grepConfig "primary-signs" "^ +dnssec-signing: on$" (configOf primaryHost "knot");

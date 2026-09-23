@@ -13,7 +13,9 @@ When `services.knotService.enable` is true, the read-only
 validated configuration passed to Knot. The read-only
 `services.knotService.generatedZoneStorage` list contains the generated storage
 directory and the zone-file outputs behind its links. Both options are empty
-when Knot is disabled; they expose no TSIG secret contents.
+when Knot is disabled. `services.knotService.generatedZoneFiles` gives the
+regular zone files individually, which is useful for per-file snapshots. These
+options expose no TSIG secret contents.
 
 ## Input
 

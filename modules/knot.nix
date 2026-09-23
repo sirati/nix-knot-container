@@ -213,6 +213,16 @@ in
         The storage directory contains links to the separately built zone files.
       '';
     };
+    generatedZoneFiles = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = if cfg.enable then
+        lib.mapAttrsToList
+          (name: dir: "${dir}/${lib.removeSuffix "." name}.zone")
+          built.files
+      else [ ];
+      readOnly = true;
+      description = "Regular generated zone files, suitable for per-file configuration snapshots.";
+    };
   };
 
   config = mkIf cfg.enable {
