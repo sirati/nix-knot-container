@@ -59,6 +59,15 @@ scope: with scope; {
     configOf primaryHost "knot"
   );
 
+  ddns-subdomain-acl-is-scoped =
+    grepConfig "ddns-subdomain-acl-is-scoped" "^ +update-owner-match: sub$"
+      (configOf primaryHost "knot");
+
+  ddns-subdomain-acl-has-owner =
+    grepConfig "ddns-subdomain-acl-has-owner"
+      "^ +update-owner-name: \\[ noreply\\.example\\.com\\. \\]$"
+      (configOf primaryHost "knot");
+
   # The container is the security boundary, so it needs its own netns.
   container-has-private-network =
     assertEq "container-has-private-network" true
