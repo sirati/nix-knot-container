@@ -114,4 +114,82 @@ scope: with scope; {
     grep -qE 'ip daddr 198\.51\.100\.2 (udp|tcp) dport 53 accept' ${prison.ruleset}
     echo ok > $out
   '';
+
+  fresh-init-is-manual-oneshot =
+    let
+      units = freshHost.config.systemd.services;
+    in
+    assertEq "fresh-init-is-manual-oneshot" {
+      setupWantedBy = [ ];
+      initializeWantedBy = [ ];
+      initializeType = "oneshot";
+      initializeRestart = "no";
+      prepareWantedBy = [ ];
+      prepareType = "oneshot";
+      normalWantedBy = [ "multi-user.target" ];
+      setupRequires = [ "knot-initialize.service" ];
+      normalRequires = [ "user@%U.service" "knot-prepare.service" ];
+      normalReload = [ ];
+    } {
+      setupWantedBy = units."knot-setup".wantedBy;
+      initializeWantedBy = units."knot-initialize".wantedBy;
+      initializeType = units."knot-initialize".serviceConfig.Type;
+      initializeRestart = units."knot-initialize".serviceConfig.Restart;
+      prepareWantedBy = units."knot-prepare".wantedBy;
+      prepareType = units."knot-prepare".serviceConfig.Type;
+      normalWantedBy = units."knot-knotd".wantedBy;
+      setupRequires = units."knot-setup".requires;
+      normalRequires = units."knot-knotd".requires;
+      normalReload = units."knot-knotd".serviceConfig.ExecReload or [ ];
+    };
+
+  fresh-init-shares-state-and-uses-loopback = pkgs.runCommand "check-knot-fresh-init-confinement" { } ''
+    grep -q 'listen: \[ 127.0.0.1@1053 \]' ${freshInitializer.config."knot.conf"}
+    ! grep -q '0.0.0.0@53' ${freshInitializer.config."knot.conf"}
+    echo ok > $out
+  '';
+
+  fresh-init-shares-state =
+    let
+      normal = lib.findFirst (service: service.name == "knotd") null freshPrison.svcList;
+    in
+    assertEq "fresh-init-shares-state" {
+      uid = normal.uid;
+      host = (builtins.head normal.persist).host;
+      path = (builtins.head normal.persist).path;
+    } {
+      uid = freshInitializer.uid;
+      host = (builtins.head freshInitializer.persist).host;
+      path = (builtins.head freshInitializer.persist).path;
+    };
+
+  fresh-init-exercises-knot = pkgs.runCommand "check-knot-fresh-init-runtime" {
+    nativeBuildInputs = [ pkgs.coreutils pkgs.gnused ];
+  } ''
+    mkdir -p "$TMPDIR/state" "$TMPDIR/run"
+    sed -e "s|/var/lib/knot|$TMPDIR/state|g" \
+        -e "s|/run/knot|$TMPDIR/run|g" \
+        ${freshInitializer.config."knot.conf"} > "$TMPDIR/knot.conf"
+    ${builtins.head freshInitializer.argv} initialize \
+      ${pkgs.knot-dns}/bin/knotd \
+      ${pkgs.knot-dns}/bin/knotc \
+      ${pkgs.knot-dns}/bin/keymgr \
+      ${pkgs.knot-dns}/bin/kzonecheck \
+      "$TMPDIR/knot.conf" "$TMPDIR/state" split \
+      example.com.=${builtins.head freshHost.config.services.knotService.generatedZoneFiles}
+    test -s "$TMPDIR/state/keys/data.mdb"
+    test -s "$TMPDIR/state/journal/data.mdb"
+    test -s "$TMPDIR/state/timers/data.mdb"
+    if ${builtins.head freshInitializer.argv} initialize \
+      ${pkgs.knot-dns}/bin/knotd \
+      ${pkgs.knot-dns}/bin/knotc \
+      ${pkgs.knot-dns}/bin/keymgr \
+      ${pkgs.knot-dns}/bin/kzonecheck \
+      "$TMPDIR/knot.conf" "$TMPDIR/state" split \
+      example.com.=${builtins.head freshHost.config.services.knotService.generatedZoneFiles}; then
+      echo "fresh initialization accepted existing state" >&2
+      exit 1
+    fi
+    echo ok > $out
+  '';
 }

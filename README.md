@@ -17,6 +17,22 @@ when Knot is disabled. `services.knotService.generatedZoneFiles` gives the
 regular zone files individually, which is useful for per-file snapshots. These
 options expose no TSIG secret contents.
 
+For a prison primary that accepts dynamic updates, set
+`services.knotService.freshInit.enable = true`. This adds a manual
+`<containerName>-setup.service` unit. Run it only for an empty state directory,
+after runtime TSIG secrets are available. It loads generated zones using a
+loopback-only Knot daemon, creates DNSSEC keys, and writes a manifest of the
+declarative zone records. The unit rejects an existing state directory.
+
+The regular `<containerName>-knotd.service` requires a separate
+`<containerName>-prepare.service`. Before Knot starts on its public listener,
+prepare compares the previous manifest with the current generated zone files
+and applies only changed declarative records through Knot's control API. Knot
+loads the journal on restart, retaining records added through RFC 2136. Back
+up the whole state directory, including `declarative-zones`, and restore it
+before starting the regular service on a replacement host. A service manager
+that gates the regular daemon for setup or recovery must gate prepare too.
+
 ## Input
 
 ```nix
@@ -37,6 +53,7 @@ inputs = {
   services.knotService = {
     enable = true;
     role = "primary";
+    freshInit.enable = true;
 
     zones."example.com".zone = {
       SOA = { nameServer = "ns1.example.com."; adminEmail = "hostmaster@example.com"; serial = 1; };

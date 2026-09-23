@@ -139,6 +139,8 @@ let
       keyFiles,
       user ? "knot:knot",
       logTarget ? "syslog",
+      settingsOverride ? { },
+      templateOverride ? { },
     }:
     knotZones.mkZones {
       name = "${cfg.containerName}-zones";
@@ -150,8 +152,8 @@ let
           dnssec
           ;
       }) cfg.zones;
-      template = templateExtras;
-      settings = baseSettings { inherit user logTarget; };
+      template = lib.recursiveUpdate templateExtras templateOverride;
+      settings = lib.recursiveUpdate (baseSettings { inherit user logTarget; }) settingsOverride;
       inherit keyFiles;
     };
 
@@ -162,6 +164,12 @@ let
         keyFiles = map prisonSecretPath cfg.tsigKeyFiles;
         user = null;
         logTarget = "stdout";
+        # Fresh setup seeds the journal from the zone files. Thereafter the
+        # journal is authoritative; a separate pre-start reconciliation applies
+        # only declarative record changes, preserving DDNS records.
+        templateOverride = lib.optionalAttrs cfg.freshInit.enable {
+          zonefile-load = "none";
+        };
       }
     else
       { keyFiles = cfg.tsigKeyFiles; }
@@ -227,6 +235,10 @@ in
 
   config = mkIf cfg.enable {
     assertions = [
+      {
+        assertion = !cfg.freshInit.enable || (cfg.role == "primary" && cfg.backend == "prison");
+        message = "services.knotService.freshInit requires a primary with the prison backend.";
+      }
       {
         assertion = builtins.all (p: !(lib.hasPrefix builtins.storeDir p)) cfg.tsigKeyFiles;
         message = ''
