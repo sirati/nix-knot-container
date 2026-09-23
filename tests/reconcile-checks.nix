@@ -70,7 +70,7 @@ scope: with scope; {
     "$knotc" --config "$TMPDIR/normal.conf" stop
     wait "$daemon"
 
-    printf '\nstatic2.example.com. 300 IN A 203.0.113.8\n' \
+    printf '\nstatic2.example.com. 300 IN A 203.0.113.8\ntext.example.com. 300 IN TXT "hello world"\n' \
       >> "$TMPDIR/zones/example.com.zone"
     "$helper" reconcile "$knotd" "$knotc" "$keymgr" "$kzonecheck" \
       "$TMPDIR/prepare.conf" "$TMPDIR/state" split "$zone"
@@ -84,10 +84,13 @@ scope: with scope; {
       | grep -F 192.0.2.44
     "$knotc" --config "$TMPDIR/normal.conf" zone-read example.com. static2.example.com. A \
       | grep -F 203.0.113.8
+    "$knotc" --config "$TMPDIR/normal.conf" zone-read example.com. text.example.com. TXT \
+      | grep -F 'hello world'
     "$knotc" --config "$TMPDIR/normal.conf" stop
     wait "$daemon"
 
     sed -i '/static2.example.com. 300 IN A 203.0.113.8/d' "$TMPDIR/zones/example.com.zone"
+    sed -i 's/hello world/updated value/' "$TMPDIR/zones/example.com.zone"
     sed -i 's/203.0.113.2/203.0.113.9/' "$TMPDIR/zones/example.com.zone"
     "$helper" reconcile "$knotd" "$knotc" "$keymgr" "$kzonecheck" \
       "$TMPDIR/prepare.conf" "$TMPDIR/state" split "$zone"
@@ -103,6 +106,8 @@ scope: with scope; {
       | grep -F 192.0.2.44
     "$knotc" --config "$TMPDIR/normal.conf" zone-read example.com. ns1.example.com. A \
       | grep -F 203.0.113.9
+    "$knotc" --config "$TMPDIR/normal.conf" zone-read example.com. text.example.com. TXT \
+      | grep -F 'updated value'
     if "$knotc" --config "$TMPDIR/normal.conf" zone-read example.com. static2.example.com. A \
       | grep -F 203.0.113.8; then
       echo "removed declarative record is still present" >&2
