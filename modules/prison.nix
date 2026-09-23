@@ -228,25 +228,35 @@ in
     # because that is where the secrets are. The prison unit starts the
     # containers, so this gates it.
     systemd.services = {
-      "${cfg.containerName}".serviceConfig.ExecStartPre = lib.mkBefore [
-        "${tsigPreflight}"
-      ];
+      "${cfg.containerName}" = {
+        path = [ "/run/wrappers" ];
+        serviceConfig.ExecStartPre = lib.mkBefore [ "${tsigPreflight}" ];
+      };
+      "${cfg.containerName}-knotd".path = [ "/run/wrappers" ];
     } // lib.optionalAttrs cfg.freshInit.enable {
       "${cfg.containerName}-initialize" = {
         wantedBy = lib.mkForce [ ];
+        path = [ "/run/wrappers" ];
         serviceConfig = {
           Type = lib.mkForce "oneshot";
           Restart = lib.mkForce "no";
+          # Podman's --rm already removes a one-shot container as its process
+          # exits. A second `podman stop` would fail with exit 125 and turn a
+          # successful setup into a failed systemd unit.
+          ExecStop = lib.mkForce [ ];
         };
       };
       "${cfg.containerName}-prepare" = {
         wantedBy = lib.mkForce [ ];
+        path = [ "/run/wrappers" ];
         serviceConfig = {
           Type = lib.mkForce "oneshot";
           Restart = lib.mkForce "no";
+          ExecStop = lib.mkForce [ ];
         };
       };
       "${cfg.containerName}-knotd" = {
+        path = [ "/run/wrappers" ];
         requires = [ "${cfg.containerName}-prepare.service" ];
         after = [ "${cfg.containerName}-prepare.service" ];
       };

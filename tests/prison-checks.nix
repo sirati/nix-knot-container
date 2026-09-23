@@ -124,8 +124,10 @@ scope: with scope; {
       initializeWantedBy = [ ];
       initializeType = "oneshot";
       initializeRestart = "no";
+      initializeStop = [ ];
       prepareWantedBy = [ ];
       prepareType = "oneshot";
+      prepareStop = [ ];
       normalWantedBy = [ "multi-user.target" ];
       setupRequires = [ "knot-initialize.service" ];
       normalRequires = [ "user@%U.service" "knot-prepare.service" ];
@@ -135,8 +137,10 @@ scope: with scope; {
       initializeWantedBy = units."knot-initialize".wantedBy;
       initializeType = units."knot-initialize".serviceConfig.Type;
       initializeRestart = units."knot-initialize".serviceConfig.Restart;
+      initializeStop = units."knot-initialize".serviceConfig.ExecStop;
       prepareWantedBy = units."knot-prepare".wantedBy;
       prepareType = units."knot-prepare".serviceConfig.Type;
+      prepareStop = units."knot-prepare".serviceConfig.ExecStop;
       normalWantedBy = units."knot-knotd".wantedBy;
       setupRequires = units."knot-setup".requires;
       normalRequires = units."knot-knotd".requires;
