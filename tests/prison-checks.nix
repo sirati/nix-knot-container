@@ -55,6 +55,11 @@ scope: with scope; {
     echo ok > $out
   '';
 
+  prison-exposes-actual-config = pkgs.runCommand "check-prison-exposed-config" { } ''
+    cmp ${prisonHost.config.services.knotService.generatedConfigFile} ${knotd.configTree}/knot.conf
+    echo ok > $out
+  '';
+
   # A prison has no `knot` account to drop to and no syslog to write to.
   prison-config-has-no-setuid-or-syslog = pkgs.runCommand "check-prison-config-runtime" { } ''
     if grep -qE '^ +user:' ${knotd.configTree}/knot.conf; then

@@ -8,6 +8,13 @@ no init of its own, holding one capability (`CAP_NET_BIND_SERVICE`) and a
 default-drop firewall. `backend = "nspawn"` selects a full NixOS container
 instead.
 
+When `services.knotService.enable` is true, the read-only
+`services.knotService.generatedConfigFile` option gives the store path of the
+validated configuration passed to Knot. The read-only
+`services.knotService.generatedZoneStorage` list contains the generated storage
+directory and the zone-file outputs behind its links. Both options are empty
+when Knot is disabled; they expose no TSIG secret contents.
+
 ## Input
 
 ```nix

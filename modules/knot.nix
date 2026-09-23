@@ -155,6 +155,18 @@ let
       inherit keyFiles;
     };
 
+  prisonSecretPath = f: "/secrets/${baseNameOf f}";
+  built = mkSettings (
+    if cfg.backend == "prison" then
+      {
+        keyFiles = map prisonSecretPath cfg.tsigKeyFiles;
+        user = null;
+        logTarget = "stdout";
+      }
+    else
+      { keyFiles = cfg.tsigKeyFiles; }
+  );
+
   # Check only runtime metadata that a derivation cannot know. The generated
   # configuration was already checked with placeholder keys during the build;
   # this process deliberately never opens or parses the real secret.
@@ -183,8 +195,24 @@ let
 
 in
 {
-  options.services.knotService = import ./knot-options.nix {
+  options.services.knotService = (import ./knot-options.nix {
     inherit lib pkgs cfg;
+  }) // {
+    generatedConfigFile = lib.mkOption {
+      type = lib.types.nullOr lib.types.str;
+      default = if cfg.enable then toString built.configFile else null;
+      readOnly = true;
+      description = "Store path of the validated configuration read by knotd, or null when disabled.";
+    };
+    generatedZoneStorage = lib.mkOption {
+      type = lib.types.listOf lib.types.str;
+      default = if cfg.enable then map toString ([ built.storage ] ++ builtins.attrValues built.files) else [ ];
+      readOnly = true;
+      description = ''
+        Store paths of the generated zone storage directory and its zone files.
+        The storage directory contains links to the separately built zone files.
+      '';
+    };
   };
 
   config = mkIf cfg.enable {
@@ -241,6 +269,6 @@ in
 
     # Both backends build the same configuration; they differ only in where
     # the key files are readable from, so the settings are a function of that.
-    _module.args.knotLib = { inherit mkSettings mkPreflight; };
+    _module.args.knotLib = { inherit mkSettings mkPreflight built prisonSecretPath; };
   };
 }

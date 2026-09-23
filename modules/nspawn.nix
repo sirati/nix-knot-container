@@ -14,9 +14,9 @@ let
   cfg = config.services.knotService;
   inherit (lib) mkIf;
 
-  # nspawn bind-mounts each key file at the path it has on the host, so the
-  # config can include it by that same path.
-  built = knotLib.mkSettings { keyFiles = cfg.tsigKeyFiles; };
+  # nspawn bind-mounts each key file at the path it has on the host; the shared
+  # builder therefore includes it by that same path.
+  inherit (knotLib) built;
   tsigPreflight = knotLib.mkPreflight;
 
   # The NixOS configuration running *inside* the container.

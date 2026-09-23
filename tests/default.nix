@@ -224,6 +224,7 @@ let
       lib
       evalHost
       primaryHost
+      prisonHost
       prison
       knotd
       secondaryHost
