@@ -1,6 +1,8 @@
 use super::{initialize, knotc, stop_daemon, verify_state, wait_for, Inputs, START_TIMEOUT};
 use std::collections::BTreeSet;
 use std::fs;
+use std::io::Write;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -103,9 +105,55 @@ fn parse(text: &str) -> Result<BTreeSet<Record>, String> {
 fn write_manifest(path: &Path, content: &str) -> Result<(), String> {
     let parent = path.parent().ok_or("manifest has no parent")?;
     fs::create_dir_all(parent).map_err(|error| format!("create manifest directory: {error}"))?;
-    let temp = path.with_extension("zone.new");
-    fs::write(&temp, content).map_err(|error| format!("write {}: {error}", temp.display()))?;
-    fs::rename(&temp, path).map_err(|error| format!("install {}: {error}", path.display()))
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))
+        .map_err(|error| format!("protect manifest directory: {error}"))?;
+    struct Temporary(PathBuf);
+    impl Drop for Temporary {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let name = path
+        .file_name()
+        .ok_or("manifest has no filename")?
+        .to_string_lossy();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("manifest clock: {error}"))?
+        .as_nanos();
+    let mut created = None;
+    for attempt in 0..128 {
+        let temp = parent.join(format!(
+            ".{name}.{}.{stamp}.{attempt}.new",
+            std::process::id()
+        ));
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&temp)
+        {
+            Ok(output) => {
+                created = Some((Temporary(temp), output));
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(format!("create private manifest temporary: {error}")),
+        }
+    }
+    let (temporary, mut output) = created.ok_or("manifest temporary name space exhausted")?;
+    output
+        .write_all(content.as_bytes())
+        .map_err(|error| format!("write manifest: {error}"))?;
+    output
+        .sync_all()
+        .map_err(|error| format!("sync manifest: {error}"))?;
+    drop(output);
+    fs::rename(&temporary.0, path)
+        .map_err(|error| format!("install {}: {error}", path.display()))?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| format!("sync manifest directory: {error}"))
 }
 
 pub(super) fn write_initial_manifests(input: &Inputs) -> Result<(), String> {
@@ -173,6 +221,35 @@ pub(super) fn apply(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn zone_manifests_are_private_crash_tolerant_and_clean_error_temporaries() {
+        use std::os::unix::fs::MetadataExt;
+        let root =
+            std::env::temp_dir().join(format!("knot-private-manifest-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("declarative-zones/example.test.zone");
+        write_manifest(&path, "first").unwrap();
+        assert_eq!(
+            fs::metadata(path.parent().unwrap()).unwrap().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(fs::metadata(&path).unwrap().mode() & 0o777, 0o600);
+        write_manifest(&path, "second").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "second");
+        fs::write(path.with_extension("zone.new"), "stale").unwrap();
+        write_manifest(&path, "third").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "third");
+        assert_eq!(
+            fs::read_to_string(path.with_extension("zone.new")).unwrap(),
+            "stale"
+        );
+        let blocked = path.parent().unwrap().join("blocked");
+        fs::create_dir(&blocked).unwrap();
+        assert!(write_manifest(&blocked, "fail").is_err());
+        assert_eq!(fs::read_dir(path.parent().unwrap()).unwrap().count(), 3);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn parses_canonical_records_and_preserves_quoted_data() {
