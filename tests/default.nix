@@ -71,6 +71,12 @@ let
         allowedOwner = "noreply.example.com.";
         allowedOwnerMatch = "sub";
       };
+      dynamicUpdate.dkim = {
+        key = "mail-updater";
+        allowedTypes = [ "TXT" ];
+        allowedOwners = [ "*._domainkey.example.com." "*._domainkey.example.net." ];
+        allowedOwnerMatch = "pattern";
+      };
 
       tsigKeyFiles = [ "/var/lib/secrets/knot-tsig.conf" ];
     };

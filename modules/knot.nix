@@ -47,12 +47,13 @@ let
     // lib.optionalAttrs (d.allowedTypes != [ ]) {
       update-type = d.allowedTypes;
     }
-    // lib.optionalAttrs (d.allowedOwner != null) {
+    // lib.optionalAttrs (ownersOf d != [ ]) {
       update-owner = "name";
       update-owner-match = d.allowedOwnerMatch;
-      update-owner-name = [ d.allowedOwner ];
+      update-owner-name = ownersOf d;
     }
   ) cfg.dynamicUpdate;
+  ownersOf = d: lib.optional (d.allowedOwner != null) d.allowedOwner ++ d.allowedOwners;
 
   remoteEntries = lib.mapAttrsToList (
     _: r: { inherit (r) id address; } // lib.optionalAttrs (r.key != null) { inherit (r) key; }

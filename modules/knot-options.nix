@@ -203,13 +203,24 @@ in
             example = "_acme-challenge.example.com.";
             description = "Restrict updates to this exact owner name.";
           };
+          allowedOwners = mkOption {
+            type = types.listOf types.str;
+            default = [ ];
+            example = [ "_dmarc.example.com." "*._domainkey.example.com." ];
+            description = ''
+              More owner names, matched like `allowedOwner`. Every record in an
+              update must match one of the names. A name without a trailing dot
+              is relative to the updated zone.
+            '';
+          };
           allowedOwnerMatch = mkOption {
-            type = types.enum [ "equal" "sub" ];
+            type = types.enum [ "equal" "sub" "pattern" ];
             default = "equal";
             description = ''
               Match only `allowedOwner`, or every owner below it. The `sub`
               mode is suitable for a delegated application domain whose key
-              must never update sibling names.
+              must never update sibling names. In `pattern` mode a `*` label
+              matches exactly one label, such as a DKIM selector.
             '';
           };
         };

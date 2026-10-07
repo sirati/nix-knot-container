@@ -94,6 +94,15 @@ scope: with scope; {
       "^ +update-owner-name: \\[ noreply\\.example\\.com\\. \\]$"
       (configOf primaryHost "knot");
 
+  ddns-pattern-acl-lists-every-owner =
+    grepConfig "ddns-pattern-acl-lists-every-owner"
+      "^ +update-owner-name: \\[ \"\\*\\._domainkey\\.example\\.com\\.\", \"\\*\\._domainkey\\.example\\.net\\.\" \\]$"
+      (configOf primaryHost "knot");
+
+  ddns-pattern-acl-uses-pattern-match =
+    grepConfig "ddns-pattern-acl-uses-pattern-match" "^ +update-owner-match: pattern$"
+      (configOf primaryHost "knot");
+
   # The container is the security boundary, so it needs its own netns.
   container-has-private-network =
     assertEq "container-has-private-network" true

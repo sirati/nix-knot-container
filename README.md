@@ -258,6 +258,9 @@ Dynamic update:
 - `allowedOwner` limits updates to one name. Set `allowedOwnerMatch = "sub"` to
   permit only names below that owner, for example an application's dedicated
   subdomain.
+- `allowedOwners` adds more names to the same rule. With
+  `allowedOwnerMatch = "pattern"`, a `*` label matches one label, so
+  `*._domainkey.example.com.` covers DKIM selectors and nothing else.
 
 Removed packages and services:
 
