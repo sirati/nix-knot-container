@@ -159,4 +159,38 @@ scope: with scope; {
     trap - EXIT
     echo ok > "$out"
   '';
+
+  # knotd answers on its control socket before it has loaded a zone. A large
+  # zone keeps loading while reconciliation starts, which must wait for it.
+  reconcile-waits-for-zone-load = pkgs.runCommand "check-knot-reconcile-waits-for-zone-load" {
+    nativeBuildInputs = [ pkgs.coreutils pkgs.gnused pkgs.gnugrep ];
+  } ''
+    set -eu
+    mkdir -p "$TMPDIR/state" "$TMPDIR/run" "$TMPDIR/zones"
+    zonefile="$TMPDIR/zones/example.com.zone"
+    cp ${builtins.head freshHost.config.services.knotService.generatedZoneFiles} "$zonefile"
+    chmod 0644 "$zonefile"
+    for i in $(seq 1 4000); do
+      echo "bulk$i.example.com. 300 IN A 198.51.100.$((i % 250 + 1))"
+    done >> "$zonefile"
+    make_config() {
+      sed -e "s|/var/lib/knot|$TMPDIR/state|g" \
+          -e "s|/run/knot|$TMPDIR/run|g" \
+          -e "s|${builtins.head freshHost.config.services.knotService.generatedZoneStorage}|$TMPDIR/zones|g" \
+          "$1" > "$2"
+    }
+    make_config ${freshInitializer.config."knot.conf"} "$TMPDIR/setup.conf"
+    make_config ${freshPreparer.config."knot.conf"} "$TMPDIR/prepare.conf"
+    helper=${builtins.head freshInitializer.argv}
+    tools="${pkgs.knot-dns}/bin/knotd ${pkgs.knot-dns}/bin/knotc ${pkgs.knot-dns}/bin/keymgr ${pkgs.knot-dns}/bin/kzonecheck"
+    zone=example.com.=$zonefile=$TMPDIR/setup.conf
+    "$helper" initialize $tools "$TMPDIR/setup.conf" "$TMPDIR/state" split "$zone"
+    sed -i '/^bulk4000\.example\.com\. /d' "$zonefile"
+    "$helper" reconcile $tools "$TMPDIR/prepare.conf" "$TMPDIR/state" split "$zone"
+    if grep -q '^bulk4000\.' "$TMPDIR/state/declarative-zones/example.com.zone"; then
+      echo "reconcile kept the removed record" >&2
+      exit 1
+    fi
+    echo ok > "$out"
+  '';
 }

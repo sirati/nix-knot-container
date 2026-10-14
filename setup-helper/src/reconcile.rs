@@ -1,4 +1,7 @@
-use super::{initialize, knotc, stop_daemon, verify_state, wait_for, Inputs, START_TIMEOUT};
+use super::{
+    control_socket, initialize, knotc, stop_daemon, verify_state, wait_for, Inputs, SIGN_TIMEOUT,
+    START_TIMEOUT,
+};
 use std::collections::BTreeSet;
 use std::fs;
 use std::io::Write;
@@ -166,7 +169,7 @@ pub(super) fn write_initial_manifests(input: &Inputs) -> Result<(), String> {
 }
 
 pub(super) fn apply(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
-    wait_for(input, daemon, START_TIMEOUT, || {
+    wait_for(daemon, START_TIMEOUT, &control_socket(input), || {
         knotc(input, &["status"]).is_ok()
     })?;
     for zone in &input.zones {
@@ -179,6 +182,14 @@ pub(super) fn apply(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
         if old == new {
             continue;
         }
+        // knotd answers on its socket before it has loaded its zones, and a
+        // transaction on a zone not yet loaded starts from an empty zone.
+        wait_for(
+            daemon,
+            SIGN_TIMEOUT,
+            &format!("{} to load", zone.name),
+            || knotc(input, &["zone-read", &zone.name, "@", "SOA"]).is_ok(),
+        )?;
         knotc(input, &["zone-begin", &zone.name])?;
         let update = (|| {
             for record in old.difference(&new) {

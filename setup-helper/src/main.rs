@@ -74,7 +74,7 @@ fn run() -> Result<(), String> {
 }
 
 fn initialize(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
-    wait_for(input, daemon, START_TIMEOUT, || {
+    wait_for(daemon, START_TIMEOUT, &control_socket(input), || {
         knotc(input, &["status"]).is_ok()
     })?;
     for zone in &input.zones {
@@ -134,15 +134,22 @@ fn knotc(input: &Inputs, action: &[&str]) -> Result<std::process::Output, String
         Err(format!(
             "knotc {} failed: {}",
             action.join(" "),
-            String::from_utf8_lossy(&output.stderr)
+            [output.stdout.as_slice(), output.stderr.as_slice()]
+                .map(String::from_utf8_lossy)
+                .join("")
+                .trim()
         ))
     }
 }
 
+fn control_socket(input: &Inputs) -> String {
+    format!("the Knot control socket of {}", input.config.display())
+}
+
 fn wait_for(
-    input: &Inputs,
     daemon: &mut Child,
     timeout: Duration,
+    what: &str,
     mut ready: impl FnMut() -> bool,
 ) -> Result<(), String> {
     let deadline = Instant::now() + timeout;
@@ -155,14 +162,11 @@ fn wait_for(
             .map_err(|error| error.to_string())?
             .is_some()
         {
-            return Err("knotd exited during startup".into());
+            return Err(format!("knotd exited while waiting for {what}"));
         }
         thread::sleep(Duration::from_millis(250));
     }
-    Err(format!(
-        "timed out waiting for Knot control socket at {}",
-        input.config.display()
-    ))
+    Err(format!("timed out waiting for {what}"))
 }
 
 fn stop_daemon(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
