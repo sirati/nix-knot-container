@@ -42,14 +42,12 @@ let
         port = lib.toInt (builtins.elemAt m 1);
       };
 
-  submissionParents = lib.optionals (cfg.dnssec.kskSubmission != null) cfg.dnssec.kskSubmission.parents;
-  peerAddresses = lib.unique (
-    lib.concatMap (r: r.address) (builtins.attrValues cfg.remotes) ++ submissionParents
-  );
+  peerAddresses = lib.unique (lib.concatMap (r: r.address) (builtins.attrValues cfg.remotes));
 
-  # A primary sends NOTIFY, a secondary asks for a transfer, and a primary
-  # with a KSK submission check asks its parents for the DS; all are
-  # outbound to a peer's DNS port and nothing else leaves.
+  # A primary sends NOTIFY and a secondary asks for a transfer; both are
+  # outbound to a peer's DNS port and nothing else leaves. In particular no
+  # recursive resolver: knotd holds the zone keys, and a resolver it may
+  # query is a channel out of the prison. The parent's DS is checked outside.
   egressTargets = lib.concatMap (
     a:
     let

@@ -3,77 +3,42 @@
 scope:
 with scope;
 let
-  zone = {
-    SOA = {
-      nameServer = "ns1.example.com.";
-      adminEmail = "hostmaster@example.com";
-      serial = 1;
-    };
-    NS = [ "ns1.example.com." ];
-    A = [ "203.0.113.1" ];
-    subdomains.ns1.A = [ "203.0.113.2" ];
-  };
-
-  submissionHost = evalHost {
+  # The removed option: Knot used to ask these resolvers for the DS itself.
+  withParents = evalHost {
     services.knotService = {
       enable = true;
       role = "primary";
-      zones."example.com".zone = zone;
-      dnssec.kskSubmission.parents = [
-        "192.0.2.53@53"
-        "2001:db8::53@53"
-      ];
+      zones."example.com".zone = {
+        SOA = {
+          nameServer = "ns1.example.com.";
+          adminEmail = "hostmaster@example.com";
+          serial = 1;
+        };
+        NS = [ "ns1.example.com." ];
+      };
+      dnssec.kskSubmission.parents = [ "192.0.2.53@53" ];
     };
   };
-  submissionPrison = submissionHost.config.services.prisons.knot;
-  submissionKnotd = lib.findFirst (s: s.name == "knotd") null submissionPrison.svcList;
-  submissionConfig = "${submissionKnotd.configTree}/knot.conf";
 in
 {
-  # The policy names a submission whose parent is one remote holding both
-  # addresses. The file exists only if `knotc conf-check` accepted it.
-  ksk-submission-is-configured = pkgs.runCommand "check-ksk-submission" { } ''
-    conf=${submissionConfig}
-    grep -qE '^ *ksk-submission: parent$' "$conf"
-    grep -qE '^submission:' "$conf"
-    grep -qE 'parent: \[ ksk-submission-parent \]|parent: ksk-submission-parent' "$conf"
-    grep -qE 'id: ksk-submission-parent' "$conf"
-    grep -qF '192.0.2.53@53' "$conf"
-    grep -qF '2001:db8::53@53' "$conf"
-    # 0 waits for the DS forever; anything else could finish a rollover the
-    # parent never saw.
-    grep -qE '^ *timeout: 0$' "$conf"
-    echo ok > $out
-  '';
+  # Knot never queries the parent: a KSK waiting for its DS is confirmed
+  # from outside the prison with `knotc zone-ksk-submitted`.
+  ksk-submission-is-never-configured = refuteConfig "ksk-submission-is-never-configured"
+    "ksk-submission|^submission:|ksk-submission-parent" "${knotd.configTree}/knot.conf";
 
-  ksk-submission-is-off-by-default = refuteConfig "ksk-submission-is-off-by-default" "ksk-submission|^submission:" "${knotd.configTree}/knot.conf";
+  ksk-submission-parents-are-refused = assertEq "ksk-submission-parents-are-refused" false
+    (builtins.tryEval withParents.config.system.build.toplevel).success;
 
-  # Knot's prison may reach the submission parents and nothing new besides.
-  ksk-submission-opens-egress-to-the-parents =
-    assertEq "ksk-submission-opens-egress-to-the-parents"
-      [
-        {
-          address = "192.0.2.53";
-          port = 53;
-          protocol = "udp";
-        }
-        {
-          address = "192.0.2.53";
-          port = 53;
-          protocol = "tcp";
-        }
-        {
-          address = "2001:db8::53";
-          port = 53;
-          protocol = "udp";
-        }
-        {
-          address = "2001:db8::53";
-          port = 53;
-          protocol = "tcp";
-        }
-      ]
-      submissionPrison.egress.targets;
+  # A primary with secondaries reaches exactly them, whatever its DNSSEC
+  # policy: no recursive resolver a compromised knotd could tunnel through.
+  primary-egress-is-the-secondaries-only =
+    assertEq "primary-egress-is-the-secondaries-only"
+      (lib.concatMap (s: lib.concatMap (a:
+        let address = builtins.head (lib.splitString "@" a); in [
+          { inherit address; port = 53; protocol = "udp"; }
+          { inherit address; port = 53; protocol = "tcp"; }
+        ]) s.address) (builtins.attrValues prisonHost.config.services.knotService.secondaries))
+      prison.egress.targets;
 
   # knotd requires prepare. A prepare that gave up on its first failure left
   # the zone unserved; it retries, bounded, and stays activating meanwhile so

@@ -271,7 +271,7 @@ DNSSEC:
 
 - There is no `dnssec.enable = false`. You can tune the algorithm and rollover, and no setting produces unsigned zones.
 - `nsec3-iterations` is pinned to 0 per RFC 9276 whenever NSEC3 is used.
-- `kskLifetime` defaults to 0, which means no automatic KSK rollover. Rolling a KSK needs a DS update at the parent, and Knot cannot do that unattended.
+- `kskLifetime` defaults to 0, which means no automatic KSK rollover. Rolling a KSK needs a DS update at the parent. Knot never asks the parent itself (the prison has no egress to resolvers); a KSK waiting for its DS is confirmed from outside with `knotc zone-ksk-submitted`.
 
 ## Checks
 

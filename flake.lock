@@ -7,11 +7,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1792059448,
-        "narHash": "sha256-D5K/BO5h+ILoptWLFaZt/ZNRsBbULYlAv9/dhdpMj0A=",
+        "lastModified": 1792072424,
+        "narHash": "sha256-SB2HESNHE3elPBYhv3hudrLiFdzPmdg2/61ezB+aGZo=",
         "owner": "sirati",
         "repo": "NixOS-Container-Podman",
-        "rev": "ebabba1605c6aeffe02b38b04467f80caa49c297",
+        "rev": "ce9c5d5fa55f97a21294bb9bb538ca78dc6a19cc",
         "type": "github"
       },
       "original": {
