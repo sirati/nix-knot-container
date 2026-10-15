@@ -130,7 +130,7 @@ scope: with scope; {
       prepareStop = [ ];
       normalWantedBy = [ "multi-user.target" ];
       setupRequires = [ "knot-initialize.service" ];
-      normalRequires = [ "user@%U.service" "knot-prepare.service" ];
+      normalRequires = [ "prison-user-knot.target" "knot-prepare.service" ];
       normalReload = [ ];
     } {
       setupWantedBy = units."knot-setup".wantedBy;
