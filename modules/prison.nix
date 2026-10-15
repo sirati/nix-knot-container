@@ -191,27 +191,26 @@ let
       file = true;
     }) cfg.tsigKeyFiles;
 
-  initialize = prison.mkPrisonService {
-    name = "initialize";
-    exec = initArgs "initialize" setupBuilt;
-    uid = 1000;
-    packages = [ cfg.package setupBuilt.storage ]
-      ++ lib.concatMap (x: [ x.storage x.configFile ]) (builtins.attrValues bootstrapBuilt);
-    state = [ { path = "/run/knot"; size = "8M"; } ];
-    persist = stateMounts;
-    config."knot.conf" = setupBuilt.configFile;
-  };
+  # The two setup tasks, each a run of the fresh-init helper to completion.
+  # `oneshot` makes the unit end with the helper's exit status; a detached
+  # run had the unit succeed once the container started, and its cleanup
+  # then removed the container while the helper still ran.
+  setupTask =
+    name: mode: builtConfig:
+    prison.mkPrisonService {
+      inherit name;
+      exec = initArgs mode builtConfig;
+      uid = 1000;
+      oneshot = true;
+      packages = [ cfg.package builtConfig.storage ]
+        ++ lib.concatMap (x: [ x.storage x.configFile ]) (builtins.attrValues bootstrapBuilt);
+      state = [ { path = "/run/knot"; size = "8M"; } ];
+      persist = stateMounts;
+      config."knot.conf" = builtConfig.configFile;
+    };
 
-  prepare = prison.mkPrisonService {
-    name = "prepare";
-    exec = initArgs "reconcile" prepareBuilt;
-    uid = 1000;
-    packages = [ cfg.package prepareBuilt.storage ]
-      ++ lib.concatMap (x: [ x.storage x.configFile ]) (builtins.attrValues bootstrapBuilt);
-    state = [ { path = "/run/knot"; size = "8M"; } ];
-    persist = stateMounts;
-    config."knot.conf" = prepareBuilt.configFile;
-  };
+  initialize = setupTask "initialize" "initialize" setupBuilt;
+  prepare = setupTask "prepare" "reconcile" prepareBuilt;
 in
 {
   config = mkIf (cfg.enable && cfg.backend == "prison") {
@@ -247,17 +246,13 @@ in
       };
       "${cfg.containerName}-knotd".path = [ "/run/wrappers" ];
     } // lib.optionalAttrs cfg.freshInit.enable {
+      # The setup tasks are prison oneshots: each unit ends with its helper.
+      # Neither runs at boot; setup and knotd ask for them.
       "${cfg.containerName}-initialize" = {
-        wantedBy = lib.mkForce [ ];
         path = [ "/run/wrappers" ];
-        serviceConfig = {
-          Type = lib.mkForce "oneshot";
-          Restart = lib.mkForce "no";
-          # Podman's --rm already removes a one-shot container as its process
-          # exits. A second `podman stop` would fail with exit 125 and turn a
-          # successful setup into a failed systemd unit.
-          ExecStop = lib.mkForce [ ];
-        };
+        # Fresh setup generates keys and seeds the journal; a hang must still
+        # end in a failed unit rather than a setup that never finishes.
+        serviceConfig.TimeoutStartSec = "30min";
       };
       # knotd requires prepare, so a prepare that gives up leaves the zone
       # unserved until someone intervenes. It retries instead, with backoff
@@ -267,18 +262,16 @@ in
       # activating between attempts, so knotd's start waits for the retries
       # instead of failing on the first one.
       "${cfg.containerName}-prepare" = {
-        wantedBy = lib.mkForce [ ];
         path = [ "/run/wrappers" ];
-        startLimitIntervalSec = 900;
+        startLimitIntervalSec = 1800;
         startLimitBurst = 6;
         serviceConfig = {
-          Type = lib.mkForce "oneshot";
           Restart = lib.mkForce "on-failure";
           RestartMode = "direct";
-          RestartSec = lib.mkForce "5s";
+          RestartSec = "5s";
           RestartSteps = 4;
           RestartMaxDelaySec = "2min";
-          ExecStop = lib.mkForce [ ];
+          TimeoutStartSec = "10min";
         };
       };
       "${cfg.containerName}-knotd" = {

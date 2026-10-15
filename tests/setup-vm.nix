@@ -32,6 +32,16 @@ pkgs.testers.runNixOSTest {
         install -d -m 0700 -o "$mapped_uid" -g "$mapped_uid" /var/lib/knot-test-state
       '';
     };
+    # The next generation adds a record. The journal is authoritative after
+    # setup, so only prepare's reconcile, run to completion before knotd,
+    # brings it in.
+    specialisation.changed.configuration.services.knotService.zones."example.test".text = lib.mkForce ''
+      $TTL 300
+      example.test. IN SOA ns.example.test. hostmaster.example.test. (2 3600 600 86400 60)
+      example.test. IN NS ns.example.test.
+      ns.example.test. IN A 192.0.2.53
+      added.example.test. IN A 192.0.2.54
+    '';
     environment.systemPackages = [ pkgs.knot-dns ];
     virtualisation.memorySize = 2048;
     system.stateVersion = "26.05";
@@ -59,5 +69,17 @@ pkgs.testers.runNixOSTest {
     machine.succeed("systemctl start knot-test-knotd.service")
     machine.wait_until_succeeds("kdig @127.0.0.1 example.test. DNSKEY +short | grep -q .", timeout=30)
     assert machine.succeed("kdig @127.0.0.1 example.test. DNSKEY +short | sort") == keys
+
+    with subtest("a changed zone is reconciled by prepare before knotd serves it"):
+        machine.succeed("/run/current-system/specialisation/changed/bin/switch-to-configuration test")
+        machine.succeed("systemctl stop knot-test-knotd.service")
+        machine.succeed("systemctl start knot-test-knotd.service")
+        machine.wait_for_unit("knot-test-knotd.service")
+        machine.wait_until_succeeds(
+          "kdig +timeout=1 +retry=0 @127.0.0.1 added.example.test. A +short | grep -qx 192.0.2.54",
+          timeout=30,
+        )
+        assert machine.succeed("kdig @127.0.0.1 example.test. DNSKEY +short | sort") == keys
+        machine.succeed("test \"$(systemctl show -P Result knot-test-prepare.service)\" = success")
   '';
 }

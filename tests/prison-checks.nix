@@ -128,6 +128,8 @@ scope: with scope; {
       prepareWantedBy = [ ];
       prepareType = "oneshot";
       prepareStop = [ ];
+      initializeAttached = true;
+      prepareAttached = true;
       normalWantedBy = [ "multi-user.target" ];
       setupRequires = [ "knot-initialize.service" ];
       normalRequires = [ "prison-user-knot.target" "knot-prepare.service" ];
@@ -137,10 +139,14 @@ scope: with scope; {
       initializeWantedBy = units."knot-initialize".wantedBy;
       initializeType = units."knot-initialize".serviceConfig.Type;
       initializeRestart = units."knot-initialize".serviceConfig.Restart;
-      initializeStop = units."knot-initialize".serviceConfig.ExecStop;
+      initializeStop = units."knot-initialize".serviceConfig.ExecStop or [ ];
       prepareWantedBy = units."knot-prepare".wantedBy;
       prepareType = units."knot-prepare".serviceConfig.Type;
-      prepareStop = units."knot-prepare".serviceConfig.ExecStop;
+      prepareStop = units."knot-prepare".serviceConfig.ExecStop or [ ];
+      # A detached run ends the oneshot at the container's start and its
+      # cleanup removes the container under the running helper.
+      initializeAttached = !(lib.hasInfix " -d " (builtins.unsafeDiscardStringContext units."knot-initialize".serviceConfig.ExecStart));
+      prepareAttached = !(lib.hasInfix " -d " (builtins.unsafeDiscardStringContext units."knot-prepare".serviceConfig.ExecStart));
       normalWantedBy = units."knot-knotd".wantedBy;
       setupRequires = units."knot-setup".requires;
       normalRequires = units."knot-knotd".requires;
