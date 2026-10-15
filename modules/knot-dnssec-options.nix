@@ -46,6 +46,62 @@ in
       and Knot cannot do that for you unless you configure a submission.
     '';
   };
+  kskSubmission = mkOption {
+    type = types.nullOr (
+      types.submodule {
+        options = {
+          parents = mkOption {
+            type = types.nonEmptyListOf types.str;
+            example = [
+              "9.9.9.9@53"
+              "2620:fe::fe@53"
+            ];
+            description = ''
+              Addresses, as `address@port`, that Knot asks for the zone's DS
+              records. They form one remote, tried in order until one
+              answers, so list one server reachable over IPv4 and IPv6
+              rather than several different servers: Knot requires every
+              listed parent remote to show the DS. A validating resolver is
+              the usual choice; it answers for the parent zone and checks
+              the chain on the way. Knot's prison is given egress to exactly
+              these addresses.
+            '';
+          };
+          checkInterval = mkOption {
+            type = types.ints.positive;
+            default = 3600;
+            description = "Seconds between Knot's queries for the DS while a KSK waits for submission.";
+          };
+          timeout = mkOption {
+            type = types.ints.unsigned;
+            default = 0;
+            description = ''
+              Seconds after which Knot treats the submission as done even
+              without seeing the DS. 0 waits forever, which is the only safe
+              value: completing a rollover before the parent has the new DS
+              makes the zone bogus for every validating resolver.
+            '';
+          };
+          parentDelay = mkOption {
+            type = types.ints.unsigned;
+            default = 0;
+            description = ''
+              Extra seconds Knot waits after it first sees the DS, for the
+              parent's own secondaries and its DS TTL to catch up.
+            '';
+          };
+        };
+      }
+    );
+    default = null;
+    description = ''
+      How Knot confirms that a KSK's DS reached the parent. Knot publishes
+      CDS/CDNSKEY for a KSK that is ready, and without a submission check
+      it waits for `knotc zone-ksk-submitted` forever. With one, it polls
+      `parents` for a matching DS and completes the step itself once it
+      appears. Pushing the DS to the registrar is a separate job.
+    '';
+  };
   zskLifetime = mkOption {
     type = types.ints.unsigned;
     default = 2592000;

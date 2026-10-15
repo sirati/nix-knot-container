@@ -42,10 +42,14 @@ let
         port = lib.toInt (builtins.elemAt m 1);
       };
 
-  peerAddresses = lib.unique (lib.concatMap (r: r.address) (builtins.attrValues cfg.remotes));
+  submissionParents = lib.optionals (cfg.dnssec.kskSubmission != null) cfg.dnssec.kskSubmission.parents;
+  peerAddresses = lib.unique (
+    lib.concatMap (r: r.address) (builtins.attrValues cfg.remotes) ++ submissionParents
+  );
 
-  # A primary sends NOTIFY, a secondary asks for a transfer; both are outbound
-  # to a peer's DNS port and nothing else leaves.
+  # A primary sends NOTIFY, a secondary asks for a transfer, and a primary
+  # with a KSK submission check asks its parents for the DS; all are
+  # outbound to a peer's DNS port and nothing else leaves.
   egressTargets = lib.concatMap (
     a:
     let
@@ -255,12 +259,25 @@ in
           ExecStop = lib.mkForce [ ];
         };
       };
+      # knotd requires prepare, so a prepare that gives up leaves the zone
+      # unserved until someone intervenes. It retries instead, with backoff
+      # and a start limit so a persistent fault still ends in a failed unit.
+      # Every retry re-runs the prison's store-view check, which replaces a
+      # view left serving an older closure. RestartMode=direct keeps the unit
+      # activating between attempts, so knotd's start waits for the retries
+      # instead of failing on the first one.
       "${cfg.containerName}-prepare" = {
         wantedBy = lib.mkForce [ ];
         path = [ "/run/wrappers" ];
+        startLimitIntervalSec = 900;
+        startLimitBurst = 6;
         serviceConfig = {
           Type = lib.mkForce "oneshot";
-          Restart = lib.mkForce "no";
+          Restart = lib.mkForce "on-failure";
+          RestartMode = "direct";
+          RestartSec = lib.mkForce "5s";
+          RestartSteps = 4;
+          RestartMaxDelaySec = "2min";
           ExecStop = lib.mkForce [ ];
         };
       };

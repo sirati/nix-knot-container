@@ -55,9 +55,31 @@ let
   ) cfg.dynamicUpdate;
   ownersOf = d: lib.optional (d.allowedOwner != null) d.allowedOwner ++ d.allowedOwners;
 
-  remoteEntries = lib.mapAttrsToList (
-    _: r: { inherit (r) id address; } // lib.optionalAttrs (r.key != null) { inherit (r) key; }
-  ) cfg.remotes;
+  # KSK submission: the servers Knot asks for the DS of a KSK waiting to be
+  # submitted, as one remote, and the submission block the policy names.
+  submission = cfg.dnssec.kskSubmission;
+  submissionRemoteId = "ksk-submission-parent";
+  submissionRemotes = lib.optional (submission != null) {
+    id = submissionRemoteId;
+    address = submission.parents;
+  };
+  submissionSettings = lib.optionalAttrs (submission != null) {
+    submission = [
+      {
+        id = "parent";
+        parent = [ submissionRemoteId ];
+        check-interval = submission.checkInterval;
+        inherit (submission) timeout;
+        parent-delay = submission.parentDelay;
+      }
+    ];
+  };
+
+  remoteEntries =
+    lib.mapAttrsToList (
+      _: r: { inherit (r) id address; } // lib.optionalAttrs (r.key != null) { inherit (r) key; }
+    ) cfg.remotes
+    ++ submissionRemotes;
 
   policyEntry = {
     id = "signing";
@@ -76,6 +98,9 @@ let
   }
   // lib.optionalAttrs cfg.dnssec.singleType {
     single-type-signing = true;
+  }
+  // lib.optionalAttrs (submission != null) {
+    ksk-submission = "parent";
   };
 
   # Role-specific template settings. The storage path, zonefile-load,
@@ -101,7 +126,7 @@ let
   # already unprivileged -- and no syslog to write to.
   baseSettings =
     { user, logTarget }:
-    lib.recursiveUpdate {
+    lib.recursiveUpdate ({
       server = {
         rundir = "/run/knot";
 
@@ -130,7 +155,9 @@ let
       remote = remoteEntries;
       acl = ddnsAcls;
       policy = [ policyEntry ];
-    } cfg.extraSettings;
+    }
+    // submissionSettings
+    ) cfg.extraSettings;
 
   # Zones, storage and the complete configuration in one step. `configFile` is
   # the output of a derivation that ran `knotc conf-check` first, so the file
