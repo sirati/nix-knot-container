@@ -119,12 +119,23 @@ fn zone_ready(input: &Inputs, zone: &str) -> Result<bool, String> {
     Ok(keys.contains("KSK") && (input.single_type || keys.contains("ZSK")))
 }
 
+/// knotc's wait for an answer. A commit signs and journals the change, which
+/// on a busy host outlasts the short wait: knotc then gives up while knotd
+/// still commits, and the next run finds the change already applied.
+fn control_timeout(action: &[&str]) -> Duration {
+    if action.first() == Some(&"zone-commit") {
+        SIGN_TIMEOUT
+    } else {
+        Duration::from_secs(2)
+    }
+}
+
 fn knotc(input: &Inputs, action: &[&str]) -> Result<std::process::Output, String> {
     let output = Command::new(&input.knotc)
         .arg("--config")
         .arg(&input.config)
         .arg("--timeout")
-        .arg("2")
+        .arg(control_timeout(action).as_secs().to_string())
         .args(action)
         .output()
         .map_err(|error| format!("knotc: {error}"))?;
@@ -213,6 +224,13 @@ fn verify_state(input: &Inputs) -> Result<(), String> {
 mod tests {
     use super::*;
     use std::{env, fs};
+
+    #[test]
+    fn a_commit_waits_for_signing_and_other_controls_answer_quickly() {
+        assert_eq!(control_timeout(&["zone-commit", "example.test."]), SIGN_TIMEOUT);
+        assert_eq!(control_timeout(&["zone-set", "example.test."]), Duration::from_secs(2));
+        assert_eq!(control_timeout(&["status"]), Duration::from_secs(2));
+    }
 
     #[test]
     fn rejects_existing_state_before_starting_daemon() {

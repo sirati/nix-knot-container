@@ -168,6 +168,22 @@ pub(super) fn write_initial_manifests(input: &Inputs) -> Result<(), String> {
     Ok(())
 }
 
+/// A record already as declared counts as applied: knotd committed an earlier
+/// run's change after that run's knotc stopped waiting, so the manifest still
+/// lists the old records and this run replays the difference.
+fn satisfied(result: Result<std::process::Output, String>) -> Result<(), String> {
+    match result {
+        Ok(_) => Ok(()),
+        Err(error)
+            if error.contains("such record already exists in zone")
+                || error.contains("no such record in zone found") =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error),
+    }
+}
+
 pub(super) fn apply(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
     wait_for(daemon, START_TIMEOUT, &control_socket(input), || {
         knotc(input, &["status"]).is_ok()
@@ -193,7 +209,7 @@ pub(super) fn apply(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
         knotc(input, &["zone-begin", &zone.name])?;
         let update = (|| {
             for record in old.difference(&new) {
-                knotc(
+                satisfied(knotc(
                     input,
                     &[
                         "zone-unset",
@@ -202,10 +218,10 @@ pub(super) fn apply(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
                         &record.kind,
                         &record.data,
                     ],
-                )?;
+                ))?;
             }
             for record in new.difference(&old) {
-                knotc(
+                satisfied(knotc(
                     input,
                     &[
                         "zone-set",
@@ -215,7 +231,7 @@ pub(super) fn apply(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
                         &record.kind,
                         &record.data,
                     ],
-                )?;
+                ))?;
             }
             knotc(input, &["zone-commit", &zone.name])?;
             Ok::<_, String>(())
@@ -232,6 +248,15 @@ pub(super) fn apply(input: &Inputs, daemon: &mut Child) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_change_knot_already_committed_replays_as_applied() {
+        let failed = |message: &str| Err::<std::process::Output, String>(format!("knotc zone-set example.test. failed: error: ({message})"));
+        assert!(satisfied(failed("such record already exists in zone")).is_ok());
+        assert!(satisfied(failed("no such record in zone found")).is_ok());
+        assert!(satisfied(failed("connection timeout")).is_err());
+        assert!(satisfied(failed("malformed data")).is_err());
+    }
 
     #[test]
     fn zone_manifests_are_private_crash_tolerant_and_clean_error_temporaries() {
