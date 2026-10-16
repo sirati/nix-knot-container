@@ -261,6 +261,20 @@ in
     description = "Additional ACL ids to attach to the default template.";
   };
 
+  controlSocket = mkOption {
+    type = types.nullOr (types.strMatching "/.+");
+    default = null;
+    example = "/var/lib/knot/knot.sock";
+    description = ''
+      Control socket of the serving knotd, as the container sees it, e.g. on
+      the state mount so the host's knotc reaches it. Only the serving knotd
+      binds it: the setup, initialize and prepare instances keep theirs in
+      their own rundir. Each knotd removes its socket path when it binds and
+      when it exits, so one shared path would be taken over by whichever
+      instance ran last. null keeps the serving knotd's in its rundir.
+    '';
+  };
+
   extraSettings = mkOption {
     type = types.attrsOf types.anything;
     default = { };

@@ -161,6 +161,10 @@ let
     };
 
   prisonSecretPath = f: "/secrets/${baseNameOf f}";
+  # The serving knotd's own control socket; no helper instance binds it.
+  servingControl = lib.optionalAttrs (cfg.controlSocket != null) {
+    control.listen = cfg.controlSocket;
+  };
   built = mkSettings (
     if cfg.backend == "prison" then
       {
@@ -169,7 +173,7 @@ let
         logTarget = "stdout";
         settingsOverride = lib.optionalAttrs cfg.freshInit.enable {
           server.rundir = "/run/knot";
-        };
+        } // servingControl;
         # Fresh setup seeds the journal from the zone files. Thereafter the
         # journal is authoritative; a separate pre-start reconciliation applies
         # only declarative record changes, preserving DDNS records.
@@ -178,7 +182,10 @@ let
         };
       }
     else
-      { keyFiles = cfg.tsigKeyFiles; }
+      {
+        keyFiles = cfg.tsigKeyFiles;
+        settingsOverride = servingControl;
+      }
   );
 
   # Check only runtime metadata that a derivation cannot know. The generated
@@ -244,6 +251,15 @@ in
       {
         assertion = !cfg.freshInit.enable || (cfg.role == "primary" && cfg.backend == "prison");
         message = "services.knotService.freshInit requires a primary with the prison backend.";
+      }
+      {
+        # extraSettings reach every knotd, the helper instances too.
+        assertion = !(cfg.extraSettings ? control);
+        message = ''
+          services.knotService: set the control socket with controlSocket, not
+          extraSettings.control. A setup, initialize or prepare knotd with the
+          same socket path takes it over, and removes it when it exits.
+        '';
       }
       {
         assertion = builtins.all (p: !(lib.hasPrefix builtins.storeDir p)) cfg.tsigKeyFiles;

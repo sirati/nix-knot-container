@@ -75,4 +75,49 @@ in
       lib.hasInfix "/bin/prison-store-check " cond
       && lib.hasInfix "--view knot-store-prepare.service ${farm}" cond
     );
-}
+
+  # `knotc zone-ksk-submitted` runs on the host, against the serving knotd's
+  # control socket on the state mount. Only that knotd binds it: a prepare
+  # knotd sharing the path took it over on every switch and removed it on
+  # exit, which left the host's knotc nothing to reach.
+} // (
+  let
+    socket = "/var/lib/knot/knot.sock";
+    controlHost = evalHost {
+      services.knotService = {
+        enable = true;
+        backend = "prison";
+        role = "primary";
+        freshInit.enable = true;
+        controlSocket = socket;
+        zones."example.com".text = ''
+          $TTL 3600
+          example.com. IN SOA ns1.example.com. hostmaster.example.com. (1 3600 600 86400 60)
+          example.com. IN NS ns1.example.com.
+          ns1.example.com. IN A 203.0.113.2
+        '';
+      };
+    };
+    services = controlHost.config.services.prisons.knot.svcList;
+    configFor = name: (lib.findFirst (service: service.name == name) null services).config."knot.conf";
+    pattern = "^ +listen: \"?${lib.escapeRegex socket}\"?$";
+    shared = evalHost {
+      services.knotService = {
+        enable = true;
+        role = "primary";
+        zones."example.com".zone = {
+          SOA = { nameServer = "ns1.example.com."; adminEmail = "hostmaster@example.com"; serial = 1; };
+          NS = [ "ns1.example.com." ];
+        };
+        extraSettings.control.listen = socket;
+      };
+    };
+  in
+  {
+    control-socket-is-the-serving-knotds = grepConfig "control-socket-is-the-serving-knotds" pattern (configFor "knotd");
+    control-socket-is-not-initializes = refuteConfig "control-socket-is-not-initializes" (lib.escapeRegex socket) (configFor "initialize");
+    control-socket-is-not-prepares = refuteConfig "control-socket-is-not-prepares" (lib.escapeRegex socket) (configFor "prepare");
+    control-socket-in-extra-settings-is-refused = assertEq "control-socket-in-extra-settings-is-refused" false
+      (builtins.tryEval shared.config.system.build.toplevel).success;
+  }
+)
